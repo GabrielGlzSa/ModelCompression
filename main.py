@@ -24,9 +24,9 @@ splits, info = tfds.load('horses_or_humans', as_supervised=True, with_info=True,
 
 (train_examples, validation_examples, test_examples) = splits
 
+print(info)
 num_examples = info.splits['train'].num_examples
 num_classes = info.features['label'].num_classes
-
 BATCH_SIZE = 32
 IMAGE_SIZE = 224
 
@@ -56,91 +56,78 @@ train_ds, valid_ds, test_ds = prepare_dataset(train_examples, validation_example
                                               BATCH_SIZE)
 
 
-def test_model(layers, dataset, loss_object, metric_object):
-  metric_object.reset_state()
-  losses = []
-  for x,y in dataset:
-    for layer in layers:
-      x = layer(x)
-    losses.append(loss_object(y, x))
-    metric_object.update_state(y,x)
-  loss = tf.reduce_sum(losses)
-  metric = metric_object.result()
-  return loss, metric
-
-
 optimizer = tf.keras.optimizers.Adam()
 loss_object = tf.keras.losses.SparseCategoricalCrossentropy()
 train_metric = tf.keras.metrics.SparseCategoricalAccuracy()
 
-epochs = 2
+epochs = 1
 def create_model():
-  return tf.keras.Sequential([tf.keras.layers.Conv2D(16,(3,3),activation='relu', name='conv2d_0'),
-                         tf.keras.layers.Conv2D(16,(3,3),activation='relu', name='conv2d_1'),
+  return tf.keras.Sequential([tf.keras.layers.Conv2D(32,(3,3),activation='relu'),
+                         tf.keras.layers.Conv2D(32,(3,3),activation='relu'),
                          tf.keras.layers.MaxPool2D((2,2), 2),
                          tf.keras.layers.Flatten(),
-                         tf.keras.layers.Dense(32,activation='relu', name='Dense1'),
-                         tf.keras.layers.Dense(32,activation='relu', name='Dense2'),
-                         tf.keras.layers.Dense(num_classes, activation='softmax', name='DenseSoftmax')
+                         tf.keras.layers.Dense(128,activation='relu'),
+                         tf.keras.layers.Dense(128,activation='relu'),
+                         tf.keras.layers.Dense(num_classes, activation='softmax')
   ])
-
-# def create_MLP():
-#   return tf.keras.Sequential([MLPConv(filters=32, kernel_size=(3,3), name='MLPConv0'),
-#                               MLPConv(filters=32, kernel_size=(3,3),activation='relu', name='MLPConv1'),
-#                               tf.keras.layers.GlobalAvgPool2D(),
-#                               tf.keras.layers.Dense(num_classes, activation='softmax', name='DenseSoftmax')
-#   ])
 
 model = create_model()
 model.compile(optimizer=optimizer, loss=loss_object, metrics=train_metric)
-history = model.fit_generator(train_ds, epochs=epochs, validation_data=valid_ds)
+history = model.fit(train_ds, epochs=epochs, validation_data=valid_ds)#_generator
 
-loss, acc = test_model(model.layers, train_ds, loss_object,train_metric)
+print(model.summary())
+loss, acc = model.evaluate_generator(train_ds)
 logger.info('Loss={} and accuracy={} for train_ds using original model.'.format(loss, acc))
-loss, acc = test_model(model.layers, valid_ds, loss_object,train_metric)
+loss, acc = model.evaluate_generator(valid_ds)
 logger.info('Loss={} and accuracy={} for valid_ds using original model.'.format(loss, acc))
-loss, acc = test_model(model.layers, test_ds, loss_object,train_metric)
+loss, acc = model.evaluate_generator(test_ds)
 logger.info('Loss={} and accuracy={} for test_ds using original model.'.format(loss, acc))
 
 #Pruned 127 weights and kept same accuracy 1.0.
-# compressor = DeepCompression(model, train_ds)
-# layers = compressor.compress_layers(['Dense2'], threshold=0.001)
+# compressor = DeepCompression(model=model, threshold=0.001)
+# compressor.compress_layer('Dense2')
 
-#Shape mismatch, number of filters and number of units in replaced dense must be equal.
-# compressor = ReplaceDenseWithGlobalAvgPool(model, train_ds)
-# layers = compressor.compress_layers(['Dense2'])
+# compressor = ReplaceDenseWithGlobalAvgPool(model=model, dataset=train_ds,
+#                                            optimizer=optimizer, loss=loss_object, metrics=train_metric)
+# compressor.compress_layer()
 
-#Correct
-# compressor = InsertDenseSVD(model, train_ds)
-# layers = compressor.compress_layers(['Dense2'], verbose=1, iterations=10000)
 
-# a veces si a veces no
-# compressor = InsertDenseSparse(model, train_ds)
-# layers = compressor.compress_layers(['Dense2'], verbose=1, iterations=10000)
+# compressor = InsertDenseSVD(model=model, dataset=train_ds,
+#                             optimizer=optimizer, loss=loss_object, metrics=train_metric)
+# compressor.compress_layer('dense_1', verbose=True)
 
-#0.67
-# compressor = InsertSVDConv(model, train_ds)
-# layers = compressor.compress_layers(['conv2d_1'], verbose=1, iterations=20)
 
-#0.5 accuracy Overfit batch training set?
-# compressor = DepthwiseSeparableConvolution(model, train_ds)
-# layers = compressor.compress_layers(['conv2d_1'], verbose=1, iterations=20)
+# compressor = InsertDenseSparse(model=model, dataset=train_ds,
+#                             optimizer=optimizer, loss=loss_object, metrics=train_metric)
+# compressor.compress_layer('dense_1', verbose=True)
 
-# Overfit batch training set?
-# compressor = FireLayerCompression(model, train_ds)
-# layers = compressor.compress_layers(['conv2d_1'], verbose=1, iterations=10)
 
-#0.5 accuracy
-compressor = MLPCompression(model, train_ds)
-layers = compressor.compress_layers(['conv2d_1'], verbose=1, iterations=5)
+# compressor = InsertSVDConv(model=model, dataset=train_ds,
+#                             optimizer=optimizer, loss=loss_object, metrics=train_metric)
+# compressor.compress_layer('conv2d_1')
+
+# compressor = DepthwiseSeparableConvolution(model=model, dataset=train_ds,
+#                             optimizer=optimizer, loss=loss_object, metrics=train_metric)
+# compressor.compress_layer('conv2d_1')
+
+# compressor = FireLayerCompression(model=model, dataset=train_ds,
+#                                   optimizer=optimizer, loss=loss_object, metrics=train_metric)
+# compressor.compress_layer('conv2d_1')
+
+compressor = MLPCompression(model=model, dataset=train_ds,
+                            optimizer=optimizer, loss=loss_object, metrics=train_metric)
+compressor.compress_layer('conv2d_1')
 
 # population=20,generations=100 takes 3 hours and 40 minutes
 # compressor = SparseConnectionsCompression(model, train_ds, loss_object)
 # layers = compressor.compress_layers(['conv2d_1'], population=10,generations=5)#, iterations=100)
 
-loss, acc = test_model(layers, train_ds, loss_object,train_metric)
-logger.info('Loss={} and accuracy={} for train_ds using new model.'.format(loss, acc))
-loss, acc = test_model(layers, valid_ds, loss_object,train_metric)
-logger.info('Loss={} and accuracy={} for valid_ds using new model.'.format(loss, acc))
-loss, acc = test_model(layers, test_ds, loss_object,train_metric)
-logger.info('Loss={} and accuracy={} for test_ds using new model.'.format(loss, acc))
+new_model = compressor.get_model()
+for layer in new_model.layers:
+    print(layer)
+loss, acc = new_model.evaluate_generator(train_ds)
+logger.info('Loss={} and accuracy={} for train_ds using optimized model.'.format(loss, acc))
+loss, acc = new_model.evaluate_generator(valid_ds)
+logger.info('Loss={} and accuracy={} for valid_ds using optimized model.'.format(loss, acc))
+loss, acc = new_model.evaluate_generator(test_ds)
+logger.info('Loss={} and accuracy={} for test_ds using optimized model.'.format(loss, acc))
