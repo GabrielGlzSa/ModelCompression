@@ -134,7 +134,9 @@ RUN python3 -m pip --no-cache-dir install \
     enum34 \
     deap==1.3.1 \
     tensorflow==2.6.0 \
-    tensorflow_datasets==4.0.1
+    tensorflow_datasets==4.0.1\
+    tensorflow_transform\
+    tensorboard_plugin_profile
 
 
 # Install bazel
