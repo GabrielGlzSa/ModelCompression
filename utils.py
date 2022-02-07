@@ -33,8 +33,9 @@ def load_dataset(dataset_name = 'horses_or_humans'):
     print('Number of classes', num_classes)
 
     partial_map_fn = partial(map_fn, img_size=img_size)
-    return prepare_dataset(train_examples, validation_examples, test_examples, num_examples, partial_map_fn,
+    train_ds, val_ds, test_ds = prepare_dataset(train_examples, validation_examples, test_examples, num_examples, partial_map_fn,
                                               BATCH_SIZE)
+    return train_ds, val_ds, test_ds, input_shape, num_classes
 
 
 
