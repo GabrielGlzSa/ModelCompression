@@ -7,7 +7,6 @@ import logging
 import copy
 import random
 import re
-from deap import base, creator, tools, algorithms
 
 
 class ModelCompression:
@@ -38,6 +37,7 @@ class ModelCompression:
         self.model_changes = {}
         self.weights_before = self.count_trainable_weights()
         self.weights_after = None
+        self.target_layer_type = None
 
     def get_technique(self):
         """
@@ -117,6 +117,7 @@ class DeepCompression(ModelCompression):
 
     def __init__(self, **kwargs):
         super(DeepCompression, self).__init__(**kwargs)
+        self.target_layer_type = 'dense'
 
     def compress_layer(self, layer_name: str, threshold: float = 0.0001):
         self.logger.info('Searching for layer: {}'.format(layer_name))
@@ -143,18 +144,21 @@ class ReplaceDenseWithGlobalAvgPool(ModelCompression):
 
     def __init__(self, **kwargs):
         super(ReplaceDenseWithGlobalAvgPool, self).__init__(**kwargs)
+        self.target_layer_type = 'dense'
 
     def compress_layer(self, layer_name):
         self.logger.info('Searching for all dense layers.')
         regexp = re.compile(r'dense|fc|flatten')
         filters = None
+        removed_weights = 0
+        softmax_weights = None
         for idx, layer in enumerate(self.model.layers):
             config = layer.get_config()
             lname = config['name'].lower()
-
             if regexp.search(lname):
                 if 'softmax' in lname:
                     num_classes = config['units']
+                    softmax_weights = layer.get_weights()[0]
                     softmax = tf.keras.layers.Dense(num_classes,
                                                     input_shape=[filters],
                                                     activation='softmax',
@@ -162,9 +166,10 @@ class ReplaceDenseWithGlobalAvgPool(ModelCompression):
                     self.model_changes[idx] = {'action': 'replace',
                                                'layer': softmax}
                 else:
+                    removed_weights += np.sum([K.count_params(w) for w in layer.trainable_weights])
                     self.model_changes[idx] = {'action': 'delete',
                                                'layer': None}
-            elif 'conv' in lname:
+            elif 'filters' in config.keys():
                 filters = config['filters']
 
         self.model_changes[len(self.model.layers) - 2] = {'action': 'replace',
@@ -174,7 +179,7 @@ class ReplaceDenseWithGlobalAvgPool(ModelCompression):
         if self.fine_tune:
             self.logger.info('Fine-tuning the optimized model.')
             self.model.fit(self.dataset, epochs=self.tuning_epochs)
-        self.weights_after = self.count_trainable_weights()
+        self.weights_after = self.weights_before - removed_weights - (tf.size(softmax_weights) - (num_classes*filters) )
         self.logger.info('Finished compression')
 
 
@@ -188,6 +193,7 @@ class InsertDenseSVD(ModelCompression):
 
     def __init__(self, **kwargs):
         super(InsertDenseSVD, self).__init__(**kwargs)
+        self.target_layer_type = 'dense'
 
     def compress_layer(self, layer_name, units):
         self.logger.info('Searching for layer: {}'.format(layer_name))
@@ -215,20 +221,20 @@ class InsertDenseSVD(ModelCompression):
                                        'layer': tf.keras.layers.Dense(weights.shape[-1],
                                                                       weights=[n, bias],
                                                                       activation=layer.get_config()['activation'],
-                                                                      name='MovedDense',
+                                                                      name=layer_name+'/MovedDense',
                                                                       )}
         self.model_changes[idx] = {'action': 'insert',
                                    'layer': tf.keras.layers.Dense(units,
                                                                   weights=[u],
                                                                   activation=tf.keras.activations.linear,
                                                                   use_bias=False,
-                                                                  name='InsertedDense')}
+                                                                  name=layer_name+'/InsertedDense')}
 
         self.update_model()
         if self.fine_tune:
             self.logger.info('Fine-tuning the optimized model.')
             self.model.fit(self.dataset, epochs=self.tuning_epochs)
-        self.weights_after = self.count_trainable_weights()
+        self.weights_after = self.weights_before - (tf.size(weights) - (tf.size(u) + tf.size(n)))
         self.logger.info('Finished compression')
 
 
@@ -242,6 +248,7 @@ class InsertDenseSVDCustom(ModelCompression):
 
     def __init__(self, **kwargs):
         super(InsertDenseSVDCustom, self).__init__(**kwargs)
+        self.target_layer_type = 'dense'
 
     def compress_layer(self, layer_name, units=32, iterations=1000, verbose=False):
         self.logger.info('Searching for layer: {}'.format(layer_name))
@@ -277,21 +284,21 @@ class InsertDenseSVDCustom(ModelCompression):
                                        'layer': tf.keras.layers.Dense(weights.shape[-1],
                                                                       weights=[w2.numpy(), bias],
                                                                       activation=layer.get_config()['activation'],
-                                                                      name='MovedDense',
+                                                                      name=layer_name+'/MovedDense',
                                                                       )}
         self.model_changes[idx] = {'action': 'insert',
                                    'layer': tf.keras.layers.Dense(units,
                                                                   weights=[w1.numpy()],
                                                                   activation=tf.keras.activations.linear,
                                                                   use_bias=False,
-                                                                  name='InsertedDense')}
+                                                                  name=layer_name+'/InsertedDense')}
 
         self.update_model()
         if self.fine_tune:
             self.logger.info('Fine-tuning the optimized model.')
             self.model.fit(self.dataset, epochs=self.tuning_epochs)
 
-        self.weights_after = self.count_trainable_weights()
+        self.weights_after = self.weights_before - (tf.size(weights) - (tf.size(w1) + tf.size(w2)))
         self.logger.info('Finished compression')
 
 
@@ -318,6 +325,7 @@ class InsertDenseSparse(ModelCompression):
 
     def __init__(self, **kwargs):
         super(InsertDenseSparse, self).__init__(**kwargs)
+        self.target_layer_type = 'dense'
 
     def compress_layer(self, layer_name, units=16, iterations=1000, verbose=False):
         self.logger.info('Searching for layer: {}'.format(layer_name))
@@ -352,7 +360,7 @@ class InsertDenseSparse(ModelCompression):
                                        'layer': tf.keras.layers.Dense(weights.shape[-1],
                                                                       weights=[sparse_dict.numpy(), bias],
                                                                       activation=layer.get_config()['activation'],
-                                                                      name='SparseCodeLayer',
+                                                                      name=layer_name+'/SparseCodeLayer',
                                                                       kernel_constraint=BinaryWeight(units)
                                                                       )}
         self.model_changes[idx] = {'action': 'insert',
@@ -360,29 +368,32 @@ class InsertDenseSparse(ModelCompression):
                                                                   weights=[basis.numpy()],
                                                                   activation=tf.keras.activations.linear,
                                                                   use_bias=False,
-                                                                  name='BasisDictLayer')}
+                                                                  name=layer_name+'/BasisDictLayer')}
 
         self.update_model()
-        idx = self.find_layer('SparseCodeLayer')
+        idx = self.find_layer(layer_name+'/SparseCodeLayer')
         num_zeroes_sparse = tf.math.count_nonzero(
             tf.abs(self.model.layers[idx].get_weights()[0]) == 0.0).numpy()
+        non_zeroes_sparse = tf.math.count_nonzero(
+            tf.abs(self.model.layers[idx].get_weights()[0]) != 0.0).numpy()
         self.logger.info('Sparse dict has {} zeroes before fine-tuning.'.format(num_zeroes_sparse))
-        idx = self.find_layer('BasisDictLayer')
-        num_zeroes_basis = tf.math.count_nonzero(
-            tf.abs(self.model.layers[idx].get_weights()[0]) == 0.0).numpy()
-        self.logger.info('Sparse dict has {} zeroes before fine-tuning.'.format(num_zeroes_basis))
-        if self.fine_tune:
-            self.logger.info('Fine-tuning the optimized model.')
-            self.model.fit(self.dataset, epochs=self.tuning_epochs)
-        idx = self.find_layer('SparseCodeLayer')
-        num_zeroes_sparse = tf.math.count_nonzero(
-            tf.abs(self.model.layers[idx].get_weights()[0]) == 0.0).numpy()
-        self.logger.info('Sparse dict has {} zeroes before fine-tuning.'.format(num_zeroes_sparse))
-        idx = self.find_layer('BasisDictLayer')
+        idx = self.find_layer(layer_name+'/BasisDictLayer')
         num_zeroes_basis = tf.math.count_nonzero(
             tf.abs(self.model.layers[idx].get_weights()[0]) == 0.0).numpy()
         self.logger.info('Basis dict has {} zeroes before fine-tuning.'.format(num_zeroes_basis))
-        self.weights_after = self.count_trainable_weights() - num_zeroes_sparse - num_zeroes_basis
+        if self.fine_tune:
+            self.logger.info('Fine-tuning the optimized model.')
+            self.model.fit(self.dataset, epochs=self.tuning_epochs)
+        idx = self.find_layer(layer_name+'/SparseCodeLayer')
+        num_zeroes_sparse = tf.math.count_nonzero(
+            tf.abs(self.model.layers[idx].get_weights()[0]) == 0.0).numpy()
+        self.logger.info('Sparse dict has {} zeroes before fine-tuning.'.format(num_zeroes_sparse))
+        idx = self.find_layer(layer_name+'/BasisDictLayer')
+        num_zeroes_basis = tf.math.count_nonzero(
+            tf.abs(self.model.layers[idx].get_weights()[0]) == 0.0).numpy()
+        self.logger.info('Basis dict has {} zeroes before fine-tuning.'.format(num_zeroes_basis))
+        self.weights_after = self.weights_before - (tf.size(weights) -
+                                                    (non_zeroes_sparse + tf.size(basis)))
         self.logger.info('Finished compression')
 
 
@@ -399,6 +410,7 @@ class InsertSVDConv(ModelCompression):
 
     def __init__(self, **kwargs):
         super(InsertSVDConv, self).__init__(**kwargs)
+        self.target_layer_type = 'conv'
 
     def compress_layer(self, layer_name, units=32, iterations=5):
         self.logger.info('Searching for layer: {}'.format(layer_name))
@@ -408,9 +420,9 @@ class InsertSVDConv(ModelCompression):
         filters = layer.get_config()['filters']
         kernel_size = layer.get_config()['kernel_size']
         svd_model = tf.keras.Sequential(
-            [tf.keras.layers.Conv2D(units, kernel_size, activation='relu', name='SVDConv1',
+            [tf.keras.layers.Conv2D(units, kernel_size, activation='relu', name=layer_name+'/SVDConv1',
                                     padding='same'),
-             tf.keras.layers.Conv2D(filters, kernel_size, activation='relu', name='SVDConv2')]
+             tf.keras.layers.Conv2D(filters, kernel_size, activation='relu', name=layer_name+'/SVDConv2')]
         )
 
         x = self.model.input
@@ -454,6 +466,7 @@ class DepthwiseSeparableConvolution(ModelCompression):
 
     def __init__(self, **kwargs):
         super(DepthwiseSeparableConvolution, self).__init__(**kwargs)
+        self.target_layer_type = 'conv'
 
     def compress_layer(self, layer_name, iterations=5):
         self.weights_before = self.count_trainable_weights()
@@ -466,7 +479,7 @@ class DepthwiseSeparableConvolution(ModelCompression):
         kernel_size = layer.get_config()['kernel_size']
         model = tf.keras.Sequential([tf.keras.layers.SeparableConv2D(filters=filters,
                                                                      kernel_size=kernel_size,
-                                                                     name='DepthwiseSeparableLayer')])
+                                                                     name=layer_name+'/DepthwiseSeparableLayer')])
 
         x = self.model.input
         output = self.model.layers[idx - 1].output
@@ -502,6 +515,14 @@ class FireLayer(tf.keras.Model):
         self.expand1x1 = tf.keras.layers.Conv2D(e1x1, (1, 1), padding='valid', name=name + '/expand1x1')
         self.expand3x3 = tf.keras.layers.Conv2D(e3x3, (3, 3), padding='same', name=name + '/expand3x3')
 
+    def get_config(self):
+        config1x1 = self.expand1x1.get_config()
+        config = self.expand3x3.get_config().copy()
+        config.update({
+            'filters': config['filters']+config1x1['filters']
+        })
+        return config
+
     def call(self, inputs):
         x = self.squeeze(inputs)
         o1x1 = self.expand1x1(x)
@@ -519,6 +540,7 @@ class FireLayerCompression(ModelCompression):
 
     def __init__(self, **kwargs):
         super(FireLayerCompression, self).__init__(**kwargs)
+        self.target_layer_type = 'conv'
 
     def compress_layer(self, layer_name, iterations=5):
         self.logger.info('Searching for layer: {}'.format(layer_name))
@@ -529,7 +551,7 @@ class FireLayerCompression(ModelCompression):
         filters = layer.get_config()['filters']
         self.logger.info('Creating FireLayer.')
         model = tf.keras.Sequential(
-            [FireLayer(s1x1=filters // 4, e1x1=filters // 2, e3x3=filters // 2, name='FireLayer')])
+            [FireLayer(s1x1=filters // 4, e1x1=filters // 2, e3x3=filters // 2, name=layer_name+'/FireLayer')])
 
         self.logger.info('Creating models to generate inputs and outputs of {}'.format(layer_name))
         x = self.model.input
@@ -663,6 +685,7 @@ class MLPCompression(ModelCompression):
 
     def __init__(self, **kwargs):
         super(MLPCompression, self).__init__(**kwargs)
+        self.target_layer_type = 'conv'
 
     def compress_layer(self, layer_name, iterations=5):
         self.logger.info('Searching for layer: {}'.format(layer_name))
@@ -676,7 +699,7 @@ class MLPCompression(ModelCompression):
         mlp_model = tf.keras.Sequential([MLPConv(kernel_size=kernel_size,
                                                  filters=filters,
                                                  activation=activation,
-                                                 name='MLPConv')])
+                                                 name=layer_name+'/MLPConv')])
 
         x = self.model.input
         output = self.model.layers[idx - 1].output
@@ -807,6 +830,7 @@ class SparseConnectionsCompression(ModelCompression):
 
     def __init__(self, **kwargs):
         super(SparseConnectionsCompression, self).__init__(**kwargs)
+        self.target_layer_type = 'conv'
 
     def compress_layer(self, layer_name, epochs=20, target_perc=0.75, conn_perc_per_epoch=0.1):
         self.logger.info('Searching for layer: {}'.format(layer_name))
@@ -842,7 +866,7 @@ class SparseConnectionsCompression(ModelCompression):
                                                         filters=filters,
                                                         activation=activation,
                                                         kernel_size=kernel_size,
-                                                        name='SparseConnectionsConv')
+                                                        name=layer_name+'/SparseConnectionsConv')
                 # Calculate output to calculate create weight with expected shape
                 _ = sparse_c_layer(x)
                 sparse_c_layer.set_weights(layer_weights)
@@ -853,7 +877,7 @@ class SparseConnectionsCompression(ModelCompression):
         self.model = tf.keras.Model(inputs=input, outputs=x)
         self.model.compile(optimizer=self.optimizer, loss=self.loss_object, metrics=self.metrics)
 
-        layer_idx = self.find_layer('SparseConnectionsConv')
+        layer_idx = self.find_layer(layer_name+'/SparseConnectionsConv')
         cb = AddSparseConnectionsCallback(layer_idx,
                                           target_perc=target_perc,
                                           conn_perc_per_epoch=conn_perc_per_epoch)
@@ -1015,6 +1039,7 @@ class SparseConvolutionCompression(ModelCompression):
     def __init__(self, bases, **kwargs):
         super(SparseConvolutionCompression, self).__init__(**kwargs)
         self.bases = bases
+        self.target_layer_type = 'conv'
 
     def find_pqs(self, layer, iterations, verbose=True):
 
@@ -1112,7 +1137,7 @@ class SparseConvolutionCompression(ModelCompression):
                                                          target_weights=layer.get_weights()[0],
                                                          activation=activation,
                                                          bases=self.bases,
-                                                         name='SparseConnectionConv2D')])
+                                                         name=layer_name+'/SparseConnectionConv2D')])
 
         del P, Q, S
         self.logger.info('Getting model to obtain the input.')
