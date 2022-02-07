@@ -132,11 +132,15 @@ RUN python3 -m pip --no-cache-dir install \
     future \
     portpicker \
     enum34 \
-    deap==1.3.1 \
-    tensorflow==2.6.0 \
+    tensorflow==2.6.2 \
     tensorflow_datasets==4.0.1\
     tensorflow_transform\
-    tensorboard_plugin_profile
+    tensorboard_plugin_profile\
+    seaborn\
+    pyparsing==2.4.7\
+    tf_agents \
+    tensorflow-model-optimization
+
 
 
 # Install bazel
