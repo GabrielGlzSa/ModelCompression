@@ -1,4 +1,5 @@
 import numpy as np
+import pickle
 
 class ReplayBuffer(object):
     def __init__(self, size):
@@ -20,6 +21,23 @@ class ReplayBuffer(object):
         self._next_idx = (self._next_idx+1) % self._maxsize
 
 
+    def save(self, path):
+        with open(path, 'wb') as f:
+          pickle.dump(self._storage, f)
+
+    def load(self, path):
+        with open(path, 'rb') as f:
+          examples = pickle.load(f)
+        if self._maxsize-len(self._storage) < len(examples):
+          batch = np.random.choice(range(len(examples)), self._maxsize-len(self._storage), replace=False)
+          for idx in batch:
+            self._storage.append(examples[idx])
+            self._next_idx = (self._next_idx+1) % self._maxsize
+        else:
+          for data in examples:
+            self._storage.append(data)
+            self._next_idx = (self._next_idx+1) % self._maxsize
+
     def sample(self, batch_size):
         batch = np.random.choice(range(len(self._storage)), batch_size, replace=False)
         s, a, r, s_next, done = [], [], [], [], []
@@ -27,6 +45,7 @@ class ReplayBuffer(object):
             s_temp, a_temp, r_temp, sn_temp, done_temp = self._storage[i]
             s.append(s_temp)
             a.append(a_temp)
+            r.append(r_temp)
             s_next.append(sn_temp)
             done.append(done_temp)
 

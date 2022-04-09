@@ -14,13 +14,13 @@ def load_dataset(dataset_name = 'horses_or_humans'):
 
     (train_examples, validation_examples, test_examples) = splits
 
-    print(info)
+    # print(info)
     num_examples = info.splits['train'].num_examples
     num_classes = info.features['label'].num_classes
     input_shape = info.features['image'].shape
     BATCH_SIZE = 32
     input_shape = list(input_shape)
-    print(input_shape)
+    # print(input_shape)
     if input_shape[0]>224:
         img_size = 224
     else:
@@ -29,8 +29,8 @@ def load_dataset(dataset_name = 'horses_or_humans'):
     input_shape[0] = img_size
     input_shape[1] = img_size
 
-    print('Number of examples', num_examples)
-    print('Number of classes', num_classes)
+    # print('Number of examples', num_examples)
+    # print('Number of classes', num_classes)
 
     partial_map_fn = partial(map_fn, img_size=img_size)
     train_ds, val_ds, test_ds = prepare_dataset(train_examples, validation_examples, test_examples, num_examples, partial_map_fn,
