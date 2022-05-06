@@ -6,7 +6,7 @@ from tf_agents.environments import utils
 from tf_agents.trajectories import time_step as ts
 import numpy as np
 
-from utils import load_dataset
+from utils import *
 
 import CompressionTechniques
 
