@@ -1,6 +1,7 @@
 import tensorflow as tf
-from custom_layers import ROIEmbedding, ROIEmbedding1D
+from CompressionLibrary.custom_layers import ROIEmbedding, ROIEmbedding1D
 import numpy as np
+
 
 class DQNAgent:
     def __init__(self, name, state_shape, n_actions, epsilon=0.0, layer_type='fc'):
@@ -42,3 +43,17 @@ class DQNAgent:
         best_actions = qvalues.argmax(axis=-1)
         should_explore = np.random.choice([0, 1], batch_size, p=[1 - epsilon, epsilon])
         return np.where(should_explore, random_actions, best_actions)
+
+    def sample_actions_using_mode(self, qvalues):
+        """pick actions given qvalues. Uses epsilon-greedy exploration strategy. """
+        epsilon = self.epsilon
+        batch_size, n_actions = qvalues.shape
+        random_action = np.random.choice(n_actions, size=1)[0]
+        best_actions = qvalues.argmax(axis=-1)
+        actions, counts = np.unique(best_actions, return_counts=True)
+        index = np.argmax(counts)
+        best_action = actions[index]
+        action = np.random.choice([best_action, random_action], size=1, p=[1 - epsilon, epsilon])
+        return action
+
+

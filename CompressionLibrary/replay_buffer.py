@@ -22,8 +22,14 @@ class ReplayBuffer(object):
 
 
     def save(self, path):
-        with open(path, 'wb') as f:
-          pickle.dump(self._storage, f)
+        try:
+            with open(path, 'wb') as f:
+                pickle.dump(self._storage, f)
+        except KeyboardInterrupt:
+            print('Saving file again as it was previously interrupted.')
+            with open(path, 'wb') as f:
+                pickle.dump(self._storage, f)
+            print('Succesfuly saved.')
 
     def load(self, path):
         with open(path, 'rb') as f:
