@@ -15,14 +15,12 @@ class DQNAgent:
           output = tf.keras.layers.Dense(n_actions, activation=tf.keras.activations.linear)(x)
         else:          
           input = tf.keras.layers.Input(shape=(None, None, state_shape[-1]))
-          x = tf.keras.layers.Conv2D(64, kernel_size=3)(input)
-          x = tf.keras.layers.Conv2D(64, kernel_size=3)(x)
+          x = tf.keras.layers.Conv2D(512, kernel_size=3)(input) #64
+          x = tf.keras.layers.Conv2D(512, kernel_size=3)(x) #64
           x = ROIEmbedding(n_bins=[(4,4), (2,2), (1,1)])(x)
           x = tf.keras.layers.Dense(512, activation='relu')(x)
           output = tf.keras.layers.Dense(n_actions, activation=tf.keras.activations.linear)(x)
         self.model = tf.keras.Model(inputs=input, outputs=output, name=name)
-        self.model.summary()
-        self.weights = self.model.trainable_weights
         self.epsilon = epsilon
 
     def get_symbolic_qvalues(self, state_t):

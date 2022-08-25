@@ -3,37 +3,64 @@ import tensorflow as tf
 from functools import partial
 import numpy as np
 import pandas as pd
-import CompressionLibrary.environments as env_lib
+from CompressionLibrary.custom_layers import SparseSVD, SparseConnectionsConv2D, SparseConvolution2D
+import tensorflow.keras.backend as K
 import gc
 
+def calculate_model_weights(model):
+    total_weights = 0
+    for layer in model.layers:
+        # Save trainable state.
+        trainable_previous_config = layer.trainable
+        # Set layer to trainable to calculate number of parameters.
+        layer.trainable = True
 
-def sizeof_fmt(num, suffix='B'):
-    ''' by Fred Cirera,  https://stackoverflow.com/a/1094933/1870254, modified'''
-    for unit in ['', 'Ki', 'Mi', 'Gi', 'Ti', 'Pi', 'Ei', 'Zi']:
-        if abs(num) < 1024.0:
-            return "%3.1f %s%s" % (num, unit, suffix)
-        num /= 1024.0
-    return "%.1f %s%s" % (num, 'Yi', suffix)
+        if 'DeepComp' in layer.name:
+            weights, _ = layer.get_weights()
+            num_zeroes = tf.math.count_nonzero(tf.abs(weights) == 0.0).numpy()
+            weights_before = np.sum([K.count_params(w) for w in layer.trainable_weights])
+            weights_after = weights_before - num_zeroes
+        elif isinstance(layer, SparseSVD):
+            basis, sparse_dict, bias = layer.get_weights()
+            non_zeroes_sparse = tf.math.count_nonzero(sparse_dict != 0.0).numpy()
+            weights_after = tf.size(basis) + non_zeroes_sparse + tf.size(bias)
+        elif isinstance(layer, SparseConnectionsConv2D):
+            kernel_size = layer.get_config()['kernel_size']
+            connections = layer.get_connections()
+            num_zeroes = len(connections) - np.sum(connections)
+            if isinstance(kernel_size, int):
+                channel_weights = kernel_size**2
+            else:
+                channel_weights = tf.reduce_prod(kernel_size)
+            weights_before = np.sum([K.count_params(w) for w in layer.trainable_weights])
+            weights_after = weights_before - (channel_weights * num_zeroes)
+        elif isinstance(layer, SparseConvolution2D):
+            P, Q, S, bias = layer.get_weights()
+            num_zeroes_sparse = tf.math.count_nonzero(S == 0.0).numpy()
+            weights_after = tf.size(P) + tf.size(Q) + (tf.size(S) - num_zeroes_sparse) + tf.size(bias)
+        else:
+            weights_after = np.sum([K.count_params(w) for w in layer.trainable_weights])
+
+        total_weights += weights_after
+        # Return layer to previous trainable state
+        layer.trainable = trainable_previous_config
+
+    return int(total_weights)
 
 
-@tf.function
-def map_fn(img, label, img_size):
-    img = tf.image.resize(img, size=(img_size, img_size))
-    img /= 255.
-    return img, label
-
-
-def load_dataset(dataset_name='mnist'):
+def load_dataset(dataset_name='mnist', batch_size=32):
     splits, info = tfds.load(dataset_name, as_supervised=True, with_info=True,
                              split=['train[:80%]', 'train[80%:]', 'test'], data_dir='./data')
 
     (train_examples, validation_examples, test_examples) = splits
     num_examples = info.splits['train'].num_examples
+
     num_classes = info.features['label'].num_classes
     input_shape = info.features['image'].shape
-    BATCH_SIZE = 32
     input_shape = list(input_shape)
-    if input_shape[0] > 224:
+    if None in input_shape:
+        img_size = 224
+    elif input_shape[0] > 224:
         img_size = 224
     else:
         img_size = input_shape[0]
@@ -41,48 +68,43 @@ def load_dataset(dataset_name='mnist'):
     input_shape[0] = img_size
     input_shape[1] = img_size
 
+    if dataset_name == 'imagenet2012':
+        num_examples = 10000
+    input_shape = tuple(input_shape)
     partial_map_fn = partial(map_fn, img_size=img_size)
     train_ds, val_ds, test_ds = prepare_dataset(train_examples, validation_examples, test_examples, num_examples, partial_map_fn,
-                                                BATCH_SIZE)
+                                                batch_size)
     return train_ds, val_ds, test_ds, input_shape, num_classes
 
 
 def prepare_dataset(train_examples, validation_examples, test_examples, num_examples, map_fn, batch_size):
-    train_ds = train_examples.shuffle(
-        buffer_size=num_examples).map(map_fn).batch(batch_size)
-    valid_ds = validation_examples.map(map_fn).batch(batch_size)
-    test_ds = test_examples.map(map_fn).batch(batch_size)
+    train_ds = train_examples.take(1000).map(map_fn, num_parallel_calls=tf.data.AUTOTUNE).cache().shuffle(buffer_size=num_examples, reshuffle_each_iteration=True).batch(batch_size)
+    valid_ds = validation_examples.take(1000).map(map_fn, num_parallel_calls=tf.data.AUTOTUNE).cache().batch(batch_size)
+    test_ds = test_examples.take(1000).map(map_fn, num_parallel_calls=tf.data.AUTOTUNE).cache().batch(batch_size)
 
     return train_ds, valid_ds, test_ds
 
 
-def evaluate_adadeep(env, conv_agent, fc_agent, n_samples_mode, reward_func, n_games=1):
+def evaluate_adadeep(env, conv_agent, fc_agent, reward_func, save_name, n_games=2):
     """ Plays n_games full games. If greedy, picks actions as argmax(qvalues). Returns mean reward. """
     rewards = []
     acc = []
     weights = []
     infos = []
-    for _ in range(n_games):
+    df_results = pd.DataFrame()
+    for game_id in range(n_games):
+        tf.keras.backend.clear_session()
         s = env.reset()
         reward = 0
         df = pd.DataFrame()
         for k in range(len(env.layer_name_list)):
             next_layer_name = env.layer_name_list[env._layer_counter]
             layer = env.model.get_layer(next_layer_name)
-            was_conv = False
-            if n_samples_mode < s.shape[0]:
-                random_images = s[np.random.choice(
-                    s.shape[0], size=n_samples_mode, replace=False)]
-            else:
-                random_images = s
             if isinstance(layer, tf.keras.layers.Conv2D):
-                # qvalues = conv_agent.get_qvalues(random_image).numpy()
-                # action = conv_agent.sample_actions(qvalues)[0]
-                qvalues = conv_agent.get_qvalues(random_images).numpy()
+                qvalues = conv_agent.get_qvalues(s).numpy()
                 action = conv_agent.sample_actions_using_mode(qvalues)[0]
-                was_conv = True
             if isinstance(layer, tf.keras.layers.Dense):
-                qvalues = fc_agent.get_qvalues(random_images).numpy()
+                qvalues = fc_agent.get_qvalues(s).numpy()
                 action = fc_agent.sample_actions_using_mode(qvalues)[0]
 
             new_s, r, done, info = env.step(action)
@@ -103,6 +125,15 @@ def evaluate_adadeep(env, conv_agent, fc_agent, n_samples_mode, reward_func, n_g
         rewards.append(reward)
         acc.append(info['acc_after'])
         weights.append(info['weights_after'])
+
+        df.append({
+            'Game': game_id,
+            'reward': reward, 
+            'acc':info['acc_after'],
+            'weights': info['weights_after']}, ignore_index=True)
+    
+    df_results.to_csv(save_name, index=False)
+
     return np.mean(rewards), np.mean(acc), np.mean(weights)
 
 
@@ -129,25 +160,21 @@ def play_and_record_adadeep(conv_agent, fc_agent, env, conv_replay, fc_replay, d
             current_layer_name = env.layer_name_list[env._layer_counter]
             layer = env.model.get_layer(current_layer_name)
             was_conv = False
-            if n_samples_mode < s.shape[0]:
-                random_images = s[np.random.choice(
-                    s.shape[0], size=n_samples_mode, replace=False)]
-            else:
-                random_images = s
             if isinstance(layer, tf.keras.layers.Conv2D):
                 # qvalues = conv_agent.get_qvalues(random_image).numpy()
                 # action = conv_agent.sample_actions(qvalues)[0]
-                qvalues = conv_agent.get_qvalues(random_images).numpy()
+                qvalues = conv_agent.get_qvalues(s).numpy()
                 action = conv_agent.sample_actions_using_mode(qvalues)[0]
                 was_conv = True
             if isinstance(layer, tf.keras.layers.Dense):
-                qvalues = fc_agent.get_qvalues(random_images).numpy()
+                qvalues = fc_agent.get_qvalues(s).numpy()
                 action = fc_agent.sample_actions_using_mode(qvalues)[0]
 
             new_s, r, done, info = env.step(action)
 
             info['was_conv'] = was_conv
 
+            
             if debug:
                 print('Iteration {} - Layer {}/{}'.format(it, k, len(env.layer_name_list)),
                       s.shape, action, r, new_s.shape, done, info)
@@ -242,19 +269,19 @@ def make_env(dataset, layer_name_list, current_state_source='layer_input', next_
 
     parameters = {}
     parameters['DeepCompression'] = {
-        'layer_name': 'dense_0', 'threshold': 0.001}
-    parameters['ReplaceDenseWithGlobalAvgPool'] = {'layer_name': 'dense_1'}
-    parameters['InsertDenseSVD'] = {'layer_name': 'dense_0', 'units': 16}
-    parameters['InsertDenseSVDCustom'] = {'layer_name': 'dense_0', 'units': 16}
+        'layer_name': None, 'threshold': 0.001}
+    parameters['ReplaceDenseWithGlobalAvgPool'] = {'layer_name': None}
+    parameters['InsertDenseSVD'] = {'layer_name': None, 'units': 16}
+    # parameters['InsertDenseSVDCustom'] = {'layer_name': None, 'units': 16}
     parameters['InsertDenseSparse'] = {
-        'layer_name': 'dense_0', 'verbose': True, 'units': 16}
-    parameters['InsertSVDConv'] = {'layer_name': 'conv2d_1', 'units': 8}
-    parameters['DepthwiseSeparableConvolution'] = {'layer_name': 'conv2d_1'}
-    parameters['FireLayerCompression'] = {'layer_name': 'conv2d_1'}
-    parameters['MLPCompression'] = {'layer_name': 'conv2d_1'}
+        'layer_name': None, 'verbose': True, 'units': None}
+    parameters['InsertSVDConv'] = {'layer_name': None}
+    parameters['DepthwiseSeparableConvolution'] = {'layer_name': None}
+    parameters['FireLayerCompression'] = {'layer_name': None}
+    parameters['MLPCompression'] = {'layer_name': None}
     parameters['SparseConvolutionCompression'] = {
-        'layer_name': 'conv2d_1', 'bases': 4}
-    parameters['SparseConnectionsCompression'] = {'layer_name': 'conv2d_1', 'epochs': 20,
+        'layer_name': None}
+    parameters['SparseConnectionsCompression'] = {'layer_name': None, 'iterations': 20,
                                                   'target_perc': 0.75, 'conn_perc_per_epoch': 0.1}
 
     env = env_lib.ModelCompressionEnv(compressors_list, model_path, parameters,
@@ -263,6 +290,44 @@ def make_env(dataset, layer_name_list, current_state_source='layer_input', next_
 
     return env
 
+def PCA(x, m, high_dim=False):
+  # Compute the mean of data matrix.
+  x_mean = tf.reduce_mean(x, axis=0)
+  # Mean substraction.
+  normalized_x = (x - x_mean)
 
+  N, D = x.shape
+  # Compute the eigenvectors and eigenvalues of the data covariance matrix.
+  if D>N and high_dim:
+    cov = tf.linalg.matmul(normalized_x, normalized_x, transpose_b=True) / x.shape[0]
+  else:
+    cov = tf.linalg.matmul(normalized_x, normalized_x, transpose_a=True) / x.shape[0]
+  
+  eigvals, eigvecs =   tf.linalg.eigh(cov)
+  eigvals = tf.math.real(eigvals)
+  eigvecs = tf.math.real(eigvecs)
+
+  if D>N and high_dim:
+    eigvecs = tf.linalg.matmul(normalized_x, eigvecs, transpose_a=True)
+
+ 
+  # Choose the eigenvectors associated with the M largest eigenvalues.
+  # Collect these eigenvectors in a matrix B=[b1,...b_M]
+  descending_idx = tf.argsort(eigvals,  direction='DESCENDING')
+  eigvals = tf.gather(eigvals, descending_idx)
+  principal_vals = eigvals[:m]
+
+  eigvecs = tf.transpose(eigvecs)
+  eigvecs = tf.gather(indices=descending_idx, params=eigvecs)[:m]
+  principal_components = tf.transpose(eigvecs)
+
+  
+  B = principal_components
+  # Obtain projection matrix 
+  P = tf.linalg.matmul(B,B, transpose_b=True)
+  reconst = tf.linalg.matmul(normalized_x, P) + x_mean
+  
+  return reconst, x_mean, principal_vals, principal_components
+  
 if __name__ == '__main__':
     dataset = load_dataset('horses_or_humans')

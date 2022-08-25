@@ -1,5 +1,4 @@
-import numpy as np
-
+import tensorflow as tf
 
 
 def reward_funcv1(before, after):

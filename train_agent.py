@@ -19,7 +19,7 @@ from datetime import datetime
 from uuid import uuid4
 
 eventid = datetime.now().strftime('%Y-%m-%d-%H-%M%S-') + str(uuid4())
-dataset = 'fashion_mnist'
+dataset = 'cifar10'
 current_state = 'layer_input'
 next_state = 'layer_output'
 
@@ -141,7 +141,7 @@ conv_agent.epsilon = 0.999
 epsilon_decay = 0.999
 min_epsilon = 0.1
 optimizer = tf.keras.optimizers.Adam(1e-5)
-iterations = 10000
+iterations = 1000
 
 fc_exp_replay = ReplayBuffer(10 ** 5)
 conv_exp_replay = ReplayBuffer(10 ** 5)

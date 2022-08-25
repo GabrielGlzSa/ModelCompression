@@ -32,19 +32,20 @@ n_samples_mode = 256
 training_batch_size = 512
 rl_epochs = 1000
 # layer_name_list = ['conv2d_1', 'dense_0', 'dense_1']
-layer_name_list = [ 'block2_conv1', 'block2_conv2', 
-                    'block3_conv1', 'block3_conv2', 'block3_conv3',
-                    'block4_conv1', 'block4_conv2', 'block4_conv3',
-                    'block5_conv1', 'block5_conv2', 'block5_conv3',
-                    'fc1', 'fc2']
+layer_name_list = [ 'block2_conv1',  'block3_conv2','fc1', 'fc2']
+# layer_name_list = [ 'block2_conv1', 'block2_conv2', 
+#                     'block3_conv1', 'block3_conv2', 'block3_conv3',
+#                     'block4_conv1', 'block4_conv2', 'block4_conv3',
+#                     'block5_conv1', 'block5_conv2', 'block5_conv3',
+#                     'fc1', 'fc2']
 
 generate_new_sample = play_and_record_adadeep
 evaluate_agent = evaluate_adadeep
 reward_func = reward_functions.reward_funcv1
 
 logging.basicConfig(level=logging.DEBUG, handlers=[
-    logging.FileHandler('/home/A00806415/DCC/ModelCompression/data/ModelCompression.log', 'w+')],
-    # logging.StreamHandler()],
+    logging.FileHandler('/home/A00806415/DCC/ModelCompression/data/ModelCompression.log', 'w+'),
+    logging.StreamHandler()],
     format='%(asctime)s -%(levelname)s - %(funcName)s -  %(message)s')
 
 

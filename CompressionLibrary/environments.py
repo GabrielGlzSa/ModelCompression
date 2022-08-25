@@ -1,5 +1,3 @@
-from tabnanny import verbose
-from numpy.core.fromnumeric import compress
 import tensorflow as tf
 import tensorflow.keras.backend as K
 import numpy as np
@@ -7,179 +5,14 @@ import inspect
 import importlib
 import CompressionLibrary.CompressionTechniques as CompressionTechniques
 from CompressionLibrary.CompressionTechniques import *
+from CompressionLibrary.custom_callbacks import EarlyStoppingReward
+from CompressionLibrary.utils import calculate_model_weights
 import logging
-
-
-class LayerEnv():
-    def __init__(self, compressors_list, model_path, compr_params,
-                 dataset, validation,
-                 layer_name_list, input_shape, features_type='weight_shape'):
-
-        self.model_path = model_path
-        self.dataset = dataset
-        self.validation = validation
-        self.input_shape = input_shape
-        self.layer_name_list = layer_name_list
-        self.compr_params = compr_params
-        self.model = tf.keras.models.load_model(model_path, compile=True)
-        self.optimizer = tf.keras.optimizers.Adam()
-        self.loss_object = tf.keras.losses.SparseCategoricalCrossentropy()
-        self.train_metric = tf.keras.metrics.SparseCategoricalAccuracy()
-
-        compressors = [name for name, cls in
-                       inspect.getmembers(importlib.import_module("CompressionTechniques"), inspect.isclass) if
-                       issubclass(cls, ModelCompression)]
-
-        self.features_type = features_type
-        self.conv_compressors = []
-        self.dense_compressors = []
-        for compressor in compressors:
-            if compressor not in compressors_list:
-                continue
-            class_ = getattr(CompressionTechniques, compressor)
-            temp_comp = class_(model=self.model, dataset=self.dataset, optimizer=self.optimizer, loss=self.loss_object, metrics=self.train_metric,
-                               fine_tune=True, input_shape=self.input_shape)
-            if temp_comp.target_layer_type == 'conv':
-                self.conv_compressors.append(compressor)
-            elif temp_comp.target_layer_type == 'dense':
-                self.dense_compressors.append(compressor)
-
-        self.model = tf.keras.models.load_model(model_path, compile=True)
-
-        if self.features_type == 'weights_shape':
-            self._state = self.model.get_layer(
-                self.layer_name_list[0]).get_weights()[0].shape
-        elif self.features_type == 'input_shape':
-            self._state = self.model.get_layer(
-                self.layer_name_list[0]).input_shape[1:]
-            print(self._state)
-
-        self._layer_counter = 0
-
-        self._episode_ended = False
-        self.weights_before = int(
-            np.sum([K.count_params(w) for w in self.model.trainable_weights]))
-        loss, self.acc_before = self.model.evaluate(self.validation, verbose=0)
-
-    def observation_space(self):
-        return len(self._state)
-
-    def action_space(self, layer_type='conv'):
-        if layer_type == 'conv':
-            return len(self.conv_compressors) + 1
-        else:
-            return len(self.dense_compressors) + 1
-
-    def next_layer(self):
-        return self.layer_name_list[self._layer_counter]
-
-    def reset(self):
-        self.model = tf.keras.models.load_model(self.model_path, compile=True)
-        if self.features_type == 'weights_shape':
-            self._state = self.model.get_layer(
-                self.layer_name_list[0]).get_weights()[0].shape
-        elif self.features_type == 'input_shape':
-            self._state = self.model.get_layer(
-                self.layer_name_list[0]).input_shape[1:]
-
-        self._layer_counter = 0
-        self._episode_ended = False
-        self.weights_before = int(
-            np.sum([K.count_params(w) for w in self.model.trainable_weights]))
-
-        return self._state
-
-    def step(self, action):
-        if self._episode_ended:
-            return self.reset()
-
-        info = {}
-        layer_name = self.layer_name_list[self._layer_counter]
-        layer = self.model.get_layer(layer_name)
-        if isinstance(layer, tf.keras.layers.Conv2D):
-            compressors = self.conv_compressors
-        else:
-            compressors = self.dense_compressors
-
-        if action > len(compressors) + 1:
-            action = 0
-            info['action_overwritten'] = True
-
-        if action == 0:
-            weight_diff = 0
-            weights_before = self.weights_before
-            weights_after = self.weights_before
-            val_acc_after = self.acc_before
-
-        else:
-            # print('action_before:', action )
-            action -= 1
-            # print(compressors)
-            # print(compressors[action])
-
-            class_ = getattr(CompressionTechniques, compressors[action])
-            compressor = class_(model=self.model, dataset=self.dataset, optimizer=self.optimizer, loss=self.loss_object, metrics=self.train_metric,
-                                fine_tune=True, input_shape=self.input_shape)
-
-            compressor.weights_before = self.weights_before
-
-            if compressors[action] in self.compr_params.keys():
-                self.compr_params[compressors[action]
-                                  ]['layer_name'] = layer_name
-                compressor.compress_layer(
-                    **self.compr_params[compressors[action]])
-            else:
-                compressor.compress_layer(layer_name=layer_name)
-
-            self.model = compressor.get_model()
-
-            weights_before, weights_after = compressor.get_weights_diff()
-            weight_diff = 1 - (weights_after / weights_before)
-
-            loss, val_acc_after = self.model.evaluate(
-                self.validation, verbose=0)
-
-        info['acc_before'] = self.acc_before
-        info['acc_after'] = val_acc_after
-        info['weights_before'] = weights_before
-        info['weights_after'] = weights_after
-
-        self.weights_before = weights_after
-        self.acc_before = val_acc_after
-        reward = weight_diff + val_acc_after
-
-        if compressors[action] == 'ReplaceDenseWithGlobalAvgPool':
-            self._episode_ended = True
-            self._state = self.model.layers[-1].get_weights()[0].shape
-            if self.features_type == 'weights_shape':
-                self._state = self.model.layers[-1].get_weights()[0].shape
-            elif self.features_type == 'input_shape':
-                self._state = self.model.layers[-1].input_shape[1:]
-                self._state = tuple(list(self._state)+[0, 0])
-        else:
-            self._layer_counter += 1
-            if self._layer_counter == len(self.layer_name_list):
-                self._episode_ended = True
-            else:
-                self._state = self.model.get_layer(
-                    self.layer_name_list[self._layer_counter]).get_weights()[0].shape
-                if self.features_type == 'weights_shape':
-                    self._state = self.model.get_layer(
-                        self.layer_name_list[self._layer_counter]).get_weights()[0].shape
-                elif self.features_type == 'input_shape':
-                    self._state = self.model.get_layer(
-                        self.layer_name_list[self._layer_counter]).input_shape[1:]
-                    self._state = tuple(list(self._state)+[0, 0])
-
-        if self.features_type == 'weights_shape' and len(self._state) == 2:
-            self._state = tuple(list(self._state)+[0, 0])
-        return self._state, reward, self._episode_ended, info
-
 
 class ModelCompressionEnv():
     def __init__(self, compressors_list, model_path, compr_params,
                  train_ds, validation_ds, test_ds,
-                 layer_name_list, input_shape, current_state_source='layer_input', next_state_source='layer_output', verbose=False):
+                 layer_name_list, input_shape, current_state_source='layer_input', next_state_source='layer_output', verbose=0, get_state_from='validation', tuning_epochs=20, num_feature_maps=128, tuning_batch_size=32):
 
         self._episode_ended = False
         self.verbose = verbose
@@ -194,8 +27,14 @@ class ModelCompressionEnv():
         self.current_state_source = current_state_source
         self.next_state_source = next_state_source
         self.compr_params = compr_params
+        self.num_feature_maps = num_feature_maps
+        self.tuning_batch_size = tuning_batch_size
+        self.tuning_epochs = tuning_epochs
+        self.get_state_from = get_state_from
+        self.callbacks = []
+
         self.model = tf.keras.models.load_model(model_path, compile=True)
-        self.optimizer = tf.keras.optimizers.Adam()
+        self.optimizer = tf.keras.optimizers.Adam(1e-5)
         self.loss_object = tf.keras.losses.SparseCategoricalCrossentropy()
         self.train_metric = tf.keras.metrics.SparseCategoricalAccuracy()
         self.chosen_actions = []
@@ -211,37 +50,57 @@ class ModelCompressionEnv():
                 continue
             class_ = getattr(CompressionTechniques, compressor)
             temp_comp = class_(model=self.model, dataset=self.train_ds, optimizer=self.optimizer, loss=self.loss_object, metrics=self.train_metric,
-                               fine_tune=True, input_shape=self.input_shape)
+                               fine_tuning=False, input_shape=self.input_shape)
+
             if temp_comp.target_layer_type == 'conv':
                 self.conv_compressors.append(compressor)
             elif temp_comp.target_layer_type == 'dense':
                 self.dense_compressors.append(compressor)
+            del temp_comp
 
         self.model = tf.keras.models.load_model(model_path, compile=True)
 
         self._layer_counter = 0
 
+        max_filters = self.get_highest_num_filters()
+        self.logger.debug('The highest number of filters of a Conv2D layer is {}.'.format(max_filters))
         self._state = self.get_state('current_state')
         self.conv_shape = self._state.shape
 
+        self.conv_shape = tf.constant(self.conv_shape).numpy()
+        
+        self.conv_shape[-1] = max_filters
+        
+
         self.dense_shape = self.get_output_feature_map('flatten').shape
 
-        self.weights_before = int(
-            np.sum([K.count_params(w) for w in self.model.trainable_weights]))
-        loss, self.acc_before = self.model.evaluate(
-            self.validation_ds, verbose=0)
+        self.weights_before = int(np.sum([K.count_params(w) for w in self.model.trainable_weights]))
 
-        test_loss, self.acc_before = self.model.evaluate(self.test_ds, verbose=0)
-        val_loss, self.val_acc_before = self.model.evaluate(self.validation_ds, verbose=0)
+        self.logger.debug('Evaluating model using test set.')
+        test_loss, self.test_acc_before = self.model.evaluate(self.test_ds, verbose=self.verbose)
+        self.logger.debug('Evaluating model using validation set.')
+        val_loss, self.val_acc_before = self.model.evaluate(self.validation_ds, verbose=self.verbose)
+
+        self.logger.info('Finished environment initialization.')
+
+    def get_highest_num_filters(self):
+        filters = []
+        previous_filters = None
+        for layer in self.model.layers:
+            if isinstance(layer, tf.keras.layers.Conv2D):
+                config = layer.get_config()
+                if layer.name in self.original_layer_name_list:
+                    filters.append(previous_filters)
+                    filters.append(config['filters'])
+                else:
+                    previous_filters = config['filters']
+        return max(filters)
 
     def observation_space(self):
-        return len(self._state)
+        return self.conv_shape, self.dense_shape
 
-    def action_space(self, layer_type='conv'):
-        if layer_type == 'conv':
-            return len(self.conv_compressors) + 1
-        else:
-            return len(self.dense_compressors) + 1
+    def action_space(self):
+        return len(self.conv_compressors) + 1, len(self.dense_compressors) + 1
 
     def next_layer(self):
         return self.layer_name_list[self._layer_counter]
@@ -249,7 +108,6 @@ class ModelCompressionEnv():
     def get_output_feature_map(self, layer_name):
 
         inputs = tf.keras.layers.Input(shape=self.input_shape)
-
         if isinstance(self.model.layers[0], tf.keras.layers.InputLayer):
             x = self.model.layers[1](inputs)
             start = 2
@@ -260,8 +118,7 @@ class ModelCompressionEnv():
         if layer_name in names:
             for layer in self.model.layers[start:]:
                 if layer.name == layer_name:
-                    self.logger.debug(
-                        'Getting output feature map of layer {}'.format(layer.name))
+                    self.logger.debug(f'Getting output feature map of layer {layer.name}')
                     output = layer(x)
                     break
                 else:
@@ -270,10 +127,26 @@ class ModelCompressionEnv():
             output = x
 
         generate_fmp = tf.keras.Model(inputs, output)
+        generate_fmp.compile(optimizer=self.optimizer, loss=self.loss_object, metrics=self.train_metric)
 
-        state = generate_fmp.predict(self.validation_ds)
+        self.logger.debug('Finished creating model to extract feature map.')
+        num_batches = self.num_feature_maps//self.tuning_batch_size
+
+        self.logger.debug(f'For {self.num_feature_maps} samples, {num_batches} samples of {self.tuning_batch_size} are required.')
+        if self.get_state_from == 'train':
+            random_imgs = self.train_ds.take(num_batches)
+        elif self.get_state_from == 'validation':
+            random_imgs = self.validation_ds.take(num_batches)
+        elif self.get_state_from == 'test':
+            random_imgs = self.test_ds.take(num_batches)
+        else:
+            raise "Please choose from 'train', 'validation' and 'test'."
+
+        self.logger.debug(f'Generating feature maps for layer {layer_name}')
+        state = generate_fmp.predict(random_imgs)
 
         del generate_fmp
+
         return state
 
     def get_state(self, mode='current_state', offset=0):
@@ -282,8 +155,6 @@ class ModelCompressionEnv():
         if self._episode_ended:
             return None
         else:
-            # self.model.summary()
-            
             names = [layer.name for layer in self.model.layers]
             self.logger.debug('Layers are: {}'.format(names))
             if mode == 'current_state':
@@ -306,36 +177,52 @@ class ModelCompressionEnv():
                     pass
 
             layer_name = names[layer_idx+offset]
-            self.logger.debug('Getting  {} of layer {}.'.format(mode, layer_name))
+            self.logger.debug(f'Getting  {mode} of layer {layer_name}.')
             self._state = self.get_output_feature_map(layer_name)
-            self.logger.debug('State is {}. Getting output of layer {} and has shape {}'.format(
-                self.current_state_source, layer_name, self._state.shape))
+            self.logger.debug(f'State is {self.current_state_source}. Getting output of layer {layer_name} and has shape {self._state.shape}.')
 
             if hasattr(self, 'conv_shape'):
                 if len(self._state.shape) == len(self.conv_shape):
                     b, h, w, c = self._state.shape
-                    zeros = np.zeros(shape=self.conv_shape)
-                    zeros[:, :h, :w, :c] = self._state
+
+                    # self.logger.debug('Generating indexes for reshaping conv state.')
+                    # indexes = [[i, x,y,z] for i in range(b) for x in range(h) for y in range(w) for z in range(c)]
+                    # indexes = tf.constant(indexes)
+                    # print(indexes)
+
+                    # self.logger.debug('Performing scatter_nd update.')
+                    # self._state = tf.scatter_nd(indexes, tf.reshape(self._state, shape=-1), self.conv_shape)
+
+                    zeros = np.zeros(shape=(b,h,w,self.conv_shape[-1]))
+                    zeros[:,:,:,:c] = self._state
                     self._state = zeros
-                    
+
                 elif len(self._state.shape) == len(self.dense_shape):
-                    batch, units = self._state.shape
-                    zeros = np.zeros(shape=self.dense_shape)
-                    zeros[: , :units] = self._state
+                    b, units = self._state.shape
+
+                    # self.logger.debug('Generating indexes for reshaping dense state.')
+                    # indexes = [[x,y] for x in range(b) for y in range(units)]
+                    # indexes = tf.constant(indexes)
+
+                    # self.logger.debug('Performing scatter_nd update.')
+                    # self._state = tf.scatter_nd(indexes, tf.reshape(self._state, shape=-1), self.dense_shape)
+
+                    zeros = np.zeros(shape=(b,self.dense_shape[-1]))
+                    zeros[:,:units] = self._state
                     self._state = zeros
+
+
      
-            self.logger.debug('State is {}. Getting output of layer {} and has shape {}'.format(
-                    self.current_state_source, layer_name, self._state.shape))
+            self.logger.debug(f'The state was reshaped into shape {self._state.shape}')
 
             return self._state
 
     def reset(self):
-        # self.model.summary()
         self.logger.debug('---RESTARTING ENVIRONMENT---')
 
         self.model = tf.keras.models.load_model(self.model_path, compile=True)
         self.layer_name_list = self.original_layer_name_list.copy()
-
+        self.callbacks = []
         self._layer_counter = 0
         self._state = self.get_state('current_state')
 
@@ -351,18 +238,17 @@ class ModelCompressionEnv():
         if self._episode_ended:
             return self.reset()
 
-        info = {}
+        
         layer_name = self.layer_name_list[self._layer_counter]
+        info = {'layer_name': layer_name}
+
         layer = self.model.get_layer(layer_name)
         if isinstance(layer, tf.keras.layers.Conv2D):
             compressors = self.conv_compressors
-            info['was_conv'] = True
         else:
             compressors = self.dense_compressors
-            info['was_conv'] = False
 
-        self.logger.debug(
-            'Using action {} on layer {}.'.format(action, layer_name))
+        self.logger.debug(f'Using action {action} on layer {layer_name}.')
 
 
         if action > len(compressors) + 1:
@@ -375,53 +261,47 @@ class ModelCompressionEnv():
             weights_before = self.weights_before
             weights_after = self.weights_before
             val_acc_after = self.val_acc_before
-            test_acc_after = self.acc_before
-            self.logger.debug(
-                'Layer {} was not compressed.'.format(layer_name))
+            test_acc_after = self.test_acc_before
+            self.logger.debug(f'Layer {layer_name} was not compressed.')
+            self.chosen_actions.append('None')
 
         else:
             action -= 1
-            self.logger.debug('Compressing layer {} using {}'.format(
-                layer_name, compressors[action]))
+            self.logger.debug(f'Compressing layer {layer_name} using {compressors[action]}')
 
+            # Save the sequence of actions.
             self.chosen_actions.append(compressors[action])
 
+            
             class_ = getattr(CompressionTechniques, compressors[action])
-            compressor = class_(model=self.model, dataset=self.train_ds, optimizer=self.optimizer,
-                                loss=self.loss_object, metrics=self.train_metric, fine_tune=True, input_shape=self.input_shape, verbose=0)
 
-            compressor.weights_before = self.weights_before
+            compressor = class_(model=self.model, dataset=self.train_ds, optimizer=self.optimizer,
+                                loss=self.loss_object, metrics=self.train_metric, fine_tuning=False, input_shape=self.input_shape, tuning_verbose=self.verbose, callbacks=self.callbacks)
+
+
+            weights_before = calculate_model_weights(self.model)
+
+            compressor.weights_before = weights_before
+            compressor.callbacks = self.callbacks
 
             if compressors[action] in self.compr_params.keys():
-                self.compr_params[compressors[action]
-                                  ]['layer_name'] = layer_name
-                compressor.compress_layer(
-                    **self.compr_params[compressors[action]])
+                # Replace target layer with current layer name.
+                self.compr_params[compressors[action]]['layer_name'] = layer_name
+                # Apply compressor to layer.
+                compressor.compress_layer(**self.compr_params[compressors[action]])
             else:
                 compressor.compress_layer(layer_name=layer_name)
 
+            # Get compressed model
             self.model = compressor.get_model()
 
+            self.callbacks = compressor.callbacks
             self.layer_name_list[self._layer_counter] = compressor.new_layer_name
 
-            weights_before, weights_after = compressor.get_weights_diff()
+            weights_after = calculate_model_weights(self.model)
             weight_diff = 1 - (weights_after / weights_before)
-
-            test_loss, test_acc_after = self.model.evaluate(self.test_ds, verbose=0)
-            val_loss, val_acc_after = self.model.evaluate(self.validation_ds, verbose=0)
-
-        info['acc_before'] = self.acc_before
-        info['acc_after'] = val_acc_after
-        info['weights_before'] = weights_before
-        info['weights_after'] = weights_after
-        info['val_acc_before'] = self.val_acc_before
-        info['val_acc_after'] = val_acc_after
-        info['actions'] = self.chosen_actions
-
-        self.weights_before = weights_after
-        self.acc_before = test_acc_after
-        reward = weight_diff + test_acc_after
-        self.acc_before_val = val_acc_after
+            val_acc_after = 0
+            test_acc_after = 0
 
         if compressors[action] == 'ReplaceDenseWithGlobalAvgPool':
             self._episode_ended = True
@@ -433,5 +313,35 @@ class ModelCompressionEnv():
             self._layer_counter += 1
             if self._layer_counter == len(self.layer_name_list):
                 self._episode_ended = True
+                Rcb = EarlyStoppingReward(acc_before=self.val_acc_before, weights_before=self.weights_before, verbose=1)
+                self.callbacks.append(Rcb)
+
+                # Train only the modified layers.
+                for layer in self.model.layers:
+                    if layer.name in self.layer_name_list:
+                        layer.trainable = True
+                    else:
+                        layer.trainable = False
+                self.model.summary()
+                self.model.fit(self.train_ds, epochs=self.tuning_epochs, callbacks=self.callbacks, validation_data=self.validation_ds)
+
+                # Set all layers back to trainable.
+                for layer in self.model.layers:
+                    layer.trainable = True
+
+                test_loss, test_acc_after = self.model.evaluate(self.test_ds, verbose=self.verbose)
+                val_loss, val_acc_after = self.model.evaluate(self.validation_ds, verbose=self.verbose)
+
+        reward = weight_diff + test_acc_after
+        info['test_acc_before'] = self.test_acc_before
+        info['test_acc_after'] = test_acc_after
+        info['weights_before'] = weights_before
+        info['weights_after'] = weights_after
+        info['val_acc_before'] = self.val_acc_before
+        info['val_acc_after'] = val_acc_after
+        info['actions'] = self.chosen_actions
+        info['reward'] = reward
+
+        
 
         return self._state, reward, self._episode_ended, info
