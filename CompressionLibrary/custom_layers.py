@@ -136,7 +136,7 @@ class FireLayer(tf.keras.layers.Layer):
 
         self.kernel_squeeze = tf.Variable(name='kernel_squeeze', initial_value=w_init(shape=(1,1, channels, self.squeeze_filters) , dtype='float32'))
         self.kernel_expand1x1 = tf.Variable(name='kernel_squeeze', initial_value=w_init(shape=(1,1, self.squeeze_filters, self.expand1x1_filters) , dtype='float32'))
-        self.kernel_expand3x3 = tf.Variable(name='kernel_squeeze', initial_value=w_init(shape=(1,1, self.squeeze_filters, self.expand1x1_filters) , dtype='float32'))
+        self.kernel_expand3x3 = tf.Variable(name='kernel_squeeze', initial_value=w_init(shape=(self.kernel_size[0],self.kernel_size[1], self.squeeze_filters, self.expand1x1_filters) , dtype='float32'))
         self.bias = tf.Variable(name='bias', initial_value=zeros_init(shape=self.filters ,dtype='float32'), trainable=True)
 
     def get_config(self):
@@ -300,9 +300,8 @@ class SparseConvolution2D(tf.keras.layers.Layer):
                 self.strides = strides
 
     def build(self, input_shape):
-        batch, h, w, channels = input_shape
+        _,  _, _, channels = input_shape
         sh, sw = self.kernel_size
-        w_init = tf.random_normal_initializer()
         identity_initializer = tf.initializers.Identity()
         
         zeroes = tf.zeros_initializer()
@@ -340,9 +339,6 @@ class SparseConvolution2D(tf.keras.layers.Layer):
         return config
 
     def call(self, inputs):
-        batch, h, w, channels = inputs.shape
-
-        padding = self.padding
         J = tf.matmul(inputs, self.P)
 
         # Move channels to the first dimension so that it be split first in the map.

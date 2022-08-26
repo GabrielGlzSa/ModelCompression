@@ -318,10 +318,11 @@ class InsertSVDConv(ModelCompression):
         config = old_layer.get_config()
         filters = config['filters']
         padding = config['padding']
+        strides = config['strides']
         kernel_size = config['kernel_size']
         units = filters //12
 
-        new_layer = ConvSVD(units=units, filters=filters, kernel_size=kernel_size, padding=padding,name=old_layer.name + '/SVDConv')
+        new_layer = ConvSVD(hidden_filters=units, filters=filters, strides=strides, kernel_size=kernel_size, padding=padding,name=old_layer.name + '/SVDConv')
         new_layer._name = old_layer.name + '/SVDConv'
 
         new_layer(old_layer.input)
@@ -342,7 +343,7 @@ class DepthwiseSeparableConvolution(ModelCompression):
         filters = config['filters']
         kernel_size = config['kernel_size']
         padding = config['padding']
-        new_layer = tf.keras.layers.SeparableConv2D(filters=filters, kernel_size=kernel_size, padding=padding,
+        new_layer = tf.keras.layers.SeparableConv2D(hidden_filters=filters, kernel_size=kernel_size, padding=padding,
                   name=old_layer.name + '/DepthwiseSeparableLayer')
 
         new_layer(old_layer.input)
@@ -371,9 +372,10 @@ class FireLayerCompression(ModelCompression):
         strides = config['strides']
         padding = config['padding']
 
-        new_layer = FireLayer(s1x1=(filters // 4),
-                  e1x1=(filters // 2),
-                  e3x3=(filters // 2),
+        squeeze_filters = (filters // 4)
+        expand1x1_filters = (filters // 2)
+        expand3x3_filters = (filters // 2)
+        new_layer = FireLayer(squeeze_filters=squeeze_filters, expand1x1_filters=expand1x1_filters, expand3x3_filters=expand3x3_filters, kernel_size=kernel_size, activation=activation,
                   padding=padding,
                   strides=strides,
                   name=old_layer.name + '/FireLayer')
