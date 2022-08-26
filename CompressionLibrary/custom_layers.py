@@ -1,8 +1,10 @@
+from distutils.command.config import config
+from tkinter.ttk import _Padding
 import tensorflow as tf
 from CompressionLibrary.custom_constraints import kNonZeroes, SparseWeights
 from CompressionLibrary.regularizers import L1L2SRegularizer
 
-
+@tf.keras.utils.register_keras_serializable()
 class DenseSVD(tf.keras.layers.Layer):
 
     def __init__(self, s_shape, u_shape, v_shape, activation, **kwargs):
@@ -10,6 +12,8 @@ class DenseSVD(tf.keras.layers.Layer):
         self.s_shape = s_shape
         self.u_shape = u_shape
         self.v_shape = v_shape
+        self.hidden_units = s_shape[-1]
+        self.output_units = v_shape[-1]
         self.activation = tf.keras.activations.get(activation)
 
     def build(self, input_shape):
@@ -23,27 +27,30 @@ class DenseSVD(tf.keras.layers.Layer):
         self.bias0 = tf.Variable(name='bias0', initial_value=b_init(shape=self.v_shape[-1],dtype='float32'),
           trainable=True)
 
+    def get_config(self):
+        return  {'hidden_units': self.hidden_units, 'output_units':self.units}
+
     def call(self, inputs):
         x = tf.matmul(inputs, self.u)
         x = tf.matmul(x, tf.linalg.diag(self.s))
         x = tf.matmul(x, self.v)
         return self.activation(x+self.bias0)
 
+@tf.keras.utils.register_keras_serializable()
 class SparseSVD(tf.keras.layers.Layer):
 
-    def __init__(self, units, features, basis_vectors, k_basis_vectors,activation, **kwargs):
+    def __init__(self, units, basis_vectors, k_basis_vectors,activation, **kwargs):
         (super(SparseSVD, self).__init__)(**kwargs)
         self.activation = tf.keras.activations.get(activation)
         self.units = units
-        self.features = features
         self.basis_vectors = basis_vectors
         self.k_basis_vectors = k_basis_vectors
 
     def build(self, input_shape):
-        
+        _, features = input_shape
         w_init = tf.random_normal_initializer()
         zeros_init = tf.zeros_initializer()
-        self.basis = tf.Variable(name='basis', initial_value=w_init(shape=(self.features, self.basis_vectors)), dtype='float32')
+        self.basis = tf.Variable(name='basis', initial_value=w_init(shape=(features, self.basis_vectors)), dtype='float32')
         self.sparse_dict = tf.Variable(name='sparse_code', initial_value=zeros_init(shape=(self.basis_vectors, self.units)),
           constraint=(kNonZeroes(self.k_basis_vectors)),
           dtype='float32')
@@ -51,59 +58,111 @@ class SparseSVD(tf.keras.layers.Layer):
         self.bias0 = tf.Variable(name='bias0', initial_value=zeros_init(shape=self.units ,dtype='float32'),
           trainable=True)
 
+    def get_config(self):
+        return {'units':self.units, 'basis_vectors': self.basis_vectors, 'k_basis_vectors': self.k_basis_vectors}
+
     def call(self, inputs):
         x = tf.matmul(inputs, self.basis)
         x = tf.matmul(x, self.sparse_dict)
         return self.activation(x + self.bias0)
 
-class ConvSVD(tf.keras.Model):
+@tf.keras.utils.register_keras_serializable()
+class ConvSVD(tf.keras.layers.Layer):
 
-    def __init__(self, units, kernel_size, filters, name, padding='valid', **kwargs):
-        (super(ConvSVD, self).__init__)(name, **kwargs)
-        self.conv0 = tf.keras.layers.Conv2D(units, kernel_size, activation='relu', name=(name + '/conv_0'), padding='same')
-        self.conv1 = tf.keras.layers.Conv2D(filters,
-          kernel_size, activation='relu', name=(name + '/conv_1'), padding = padding)
+    def __init__(self, hidden_filters, filters, kernel_size, strides, padding='valid', activation='relu', **kwargs):
+        (super(ConvSVD, self).__init__)(**kwargs)
+        self.hidden_filters = hidden_filters
+        self.filters = filters
+        self.padding = padding.upper()
+        if isinstance(strides, int):
+            self.strides = (strides, strides)
+        else:
+            if isinstance(strides, tuple) or isinstance(strides, list):
+                self.strides = strides
+        if isinstance(kernel_size, int):
+            kernel_size = (kernel_size, kernel_size)
+ 
+        self.kernel_size = kernel_size
+        self.activation = tf.keras.activations.get(activation)
+
+
+    def build(self, input_shape):
+        _, _, channels = input_shape
+        w_init = tf.random_normal_initializer()
+        zeros_init = tf.zeros_initializer()
+        self.kernel0 =  tf.Variable(name='basis', initial_value=w_init(shape=(self.kernel_size[0], self.kernel_size[0],channels, self.hidden_filters)), dtype='float32', trainable=True)
+        self.kernel1 =  tf.Variable(name='basis', initial_value=w_init(shape=(self.kernel_size[0], self.kernel_size[0],self.hidden_filters, self.filters)), dtype='float32', trainable=True)
+
+        self.bias = tf.Variable(name='bias', initial_value=zeros_init(shape=self.filters ,dtype='float32'),
+          trainable=True)
 
     def get_config(self):
-        config_conv0 = self.conv1.get_config().copy()
-        config = self.conv1.get_config().copy()
-        config.update({'sub_layer_config': config_conv0})
-        return config
+        return {'hidden_filters': self.hidden_filters, 'filters': self.filters, 'kernel_size':self.kernel_size, 'strides':self.strides}
 
 
     def call(self, inputs):
-        x = self.conv0(inputs)
-        x = self.conv1(x)
-        return x
+        x = tf.nn.conv2d(input=inputs, filters=self.kernel0, strides=self.strides, padding='SAME')
+        x = tf.nn.conv2d(input=inputs, filters=self.kernel1, strides=self.strides, padding=self.padding)
+        x = tf.nn.bias_add(x, self.bias)
+        return self.activation(x)
 
+@tf.keras.utils.register_keras_serializable()
 class FireLayer(tf.keras.layers.Layer):
 
-    def __init__(self, s1x1, e1x1, e3x3, kernel_size=(3,3), strides=1, activation='relu',padding='same',**kwargs):
+    def __init__(self, squeeze_filters, expand1x1_filters, expand3x3_filters, kernel_size=(3,3), strides=1, activation='relu', padding='same',**kwargs):
         (super(FireLayer, self).__init__)(**kwargs)
-        self.squeeze = tf.keras.layers.Conv2D(s1x1,
-          (1, 1), activation='relu', name=(self.name + '/squeeze'))
-        self.expand1x1 = tf.keras.layers.Conv2D(e1x1,
-          (1, 1), padding='valid', activation=activation, name=(self.name + '/expand1x1'))
-        self.expand3x3 = tf.keras.layers.Conv2D(e3x3,
-          kernel_size, strides=strides, padding=padding, activation=activation, name=(self.name + '/expand3x3'))
-        self.padding = padding
+        self.squeeze_filters = squeeze_filters
+        self.expand1x1_filters = expand1x1_filters
+        self.expand3x3_filters = expand3x3_filters
+        if isinstance(strides, int):
+            self.strides = (strides, strides)
+        else:
+            if isinstance(strides, tuple) or isinstance(strides, list):
+                self.strides = strides
+        if isinstance(kernel_size, int):
+            kernel_size = (kernel_size, kernel_size)
+        self.kernel_size = kernel_size
+        # self.squeeze = tf.keras.layers.Conv2D(s1x1,
+        #   (1, 1), activation='relu', name=(self.name + '/squeeze'))
+        # self.expand1x1 = tf.keras.layers.Conv2D(e1x1,
+        #   (1, 1), padding='valid', activation=activation, name=(self.name + '/expand1x1'))
+        # self.expand3x3 = tf.keras.layers.Conv2D(e3x3,
+        #   kernel_size, strides=strides, padding=padding, activation=activation, name=(self.name + '/expand3x3'))
+        self.padding = padding.upper()
+        self.activation = tf.keras.activations.get(activation)
+
+    def build(self, input_shape):
+        _, _, channels = input_shape
+        w_init = tf.random_normal_initializer()
+        zeros_init = tf.zeros_initializer()
+
+        self.kernel_squeeze = tf.Variable(name='kernel_squeeze', initial_value=w_init(shape=(1,1, channels, self.squeeze_filters) , dtype='float32'))
+        self.kernel_expand1x1 = tf.Variable(name='kernel_squeeze', initial_value=w_init(shape=(1,1, self.squeeze_filters, self.expand1x1_filters) , dtype='float32'))
+        self.kernel_expand3x3 = tf.Variable(name='kernel_squeeze', initial_value=w_init(shape=(1,1, self.squeeze_filters, self.expand1x1_filters) , dtype='float32'))
+        self.bias = tf.Variable(name='bias', initial_value=zeros_init(shape=self.filters ,dtype='float32'), trainable=True)
 
     def get_config(self):
-        config1x1 = self.expand1x1.get_config()
-        config = self.expand3x3.get_config().copy()
-        config.update({'filters': config['filters'] + config1x1['filters']})
+        config = {'squeeze_filters': self.squeeze_filters, 'expand1x1_filters': self.expand1x1_filters, 'expand3x3_filters': self.expand3x3_filters, 
+        'kernel_size': self.kernel_size, 'strides': self.strides, 'activation':self.activation, 'padding': self.padding}
         return config
 
     def call(self, inputs):
         x = self.squeeze(inputs)
         o1x1 = self.expand1x1(x)
         o3x3 = self.expand3x3(x)
+        
+        
+
+        x = tf.nn.conv2d(input=inputs, filters=self.kernel_squeeze, strides=self.strides, padding='SAME')
+        x = tf.nn.conv2d(input=inputs, filters=self.kernel_expand1x1, strides=self.strides, padding='VALID')
+        x = tf.nn.conv2d(input=inputs, filters=self.kernel_expand3x3, strides=self.strides, padding=self.padding)
         x = tf.keras.layers.concatenate([o1x1, o3x3], axis=3)
-        if self.padding == 'valid':
+        if self.padding == 'VALID':
             x = tf.keras.layers.Cropping2D(cropping=1)(x)
-        return x
+        x = tf.nn.bias_add(x, self.bias)
+        return self.activation(x)
 
-
+@tf.keras.utils.register_keras_serializable()
 class MLPConv(tf.keras.layers.Layer):
 
     def __init__(self, filters, kernel_size, strides=1, padding='VALID', activation='relu', *args, **kwargs):
@@ -121,11 +180,11 @@ class MLPConv(tf.keras.layers.Layer):
 
     def get_config(self):
         config = super().get_config().copy()
-        config.update({'filters':self.filters, 'kernel_size':self.kernel_size})
+        config.update({'filters':self.filters, 'kernel_size':self.kernel_size, 'strides': self.strides, 'padding': self.padding, 'activation': self.activation})
         return config
 
     def build(self, input_shape):
-        batch, h, w, channels = input_shape
+        _, h, w, channels = input_shape
         w_init = tf.random_normal_initializer()
         self.w_0 = tf.Variable(name='kernel0', initial_value=w_init(shape=(tf.reduce_prod(self.kernel_size) * channels, self.filters // 2), dtype='float32'),
           trainable=True)
@@ -147,17 +206,10 @@ class MLPConv(tf.keras.layers.Layer):
 
     def get_config(self):
         config = super().get_config().copy()
-        print(config)
-        config.update({'filters':self.filters, 'kernel_size':self.kernel_size})
-        print(config)
+        config.update({'filters': self.filters, 'kernel_size': self.kernel_size, 'strides': self.strides, 'activation':self.activation, 'padding': self.padding})
         return config
         
     def call(self, inputs):
-        batch = tf.shape(inputs)[0]
-        h = tf.shape(inputs)[1]
-        w = tf.shape(inputs)[2]
-        channels = tf.shape(inputs)[3]
-
         fh, fw = self.kernel_size
         stride_v, stride_h = self.strides
         patches = tf.image.extract_patches(images=inputs, sizes=[
@@ -170,6 +222,7 @@ class MLPConv(tf.keras.layers.Layer):
         output = self.activation(tf.matmul(self.activation(tf.matmul(patches, self.w_0) + self.b_0), self.w_1) + self.b_1)
         return output
 
+@tf.keras.utils.register_keras_serializable()
 class SparseConnectionsConv2D(tf.keras.layers.Conv2D):
 
     def __init__(self, sparse_connections, *args, **kwargs):
@@ -195,9 +248,13 @@ class SparseConnectionsConv2D(tf.keras.layers.Conv2D):
           data_format=(self._tf_data_format),
           name=(self.__class__.__name__))
 
+    def get_config(self):
+        config = super().get_config().copy()
+        config.update({})
+        return config
+
     def build(self, input_shape):
-        # super().build(input_shape)
-        batch, h, w, channels = input_shape
+        _, _, _, channels = input_shape
         sh, sw = self.kernel_size
 
         zeroes_init = tf.zeros_initializer()
@@ -227,6 +284,7 @@ class SparseConnectionsConv2D(tf.keras.layers.Conv2D):
         out = tf.nn.relu(out)
         return out
 
+@tf.keras.utils.register_keras_serializable()
 class SparseConvolution2D(tf.keras.layers.Layer):
 
     def __init__(self, kernel_size, filters, PQS, bases, padding='valid', strides=1, activation=None, *args, **kwargs):
@@ -277,13 +335,10 @@ class SparseConvolution2D(tf.keras.layers.Layer):
         self.Q.assign(self.PQS[1])
 
         del self.PQS
-        super().build(input_shape)
 
     def get_config(self):
         config = super().get_config().copy()
-        print(config)
         config.update({'filters':self.filters, 'kernel_size':self.kernel_size})
-        print(config)
         return config
 
     def call(self, inputs):
@@ -308,7 +363,7 @@ class SparseConvolution2D(tf.keras.layers.Layer):
         O = tf.nn.relu(O)
         return O 
     
-
+@tf.keras.utils.register_keras_serializable()
 class ROIEmbedding(tf.keras.layers.Layer):
     def __init__(self, n_bins, *args, **kwargs):
         super(ROIEmbedding, self).__init__(*args, **kwargs)
@@ -376,7 +431,7 @@ class ROIEmbedding(tf.keras.layers.Layer):
         # Reshape to [None, embedding_size] so that autograph knows the size of the last dimension.
         return tf.reshape(pooled_areas, shape=[-1, self.embedding_size*x.shape[-1]])
 
-
+@tf.keras.utils.register_keras_serializable()
 class ROIEmbedding1D(tf.keras.layers.Layer):
     def __init__(self, n_bins, *args, **kwargs):
         super(ROIEmbedding1D, self).__init__(*args, **kwargs)

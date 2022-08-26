@@ -5,8 +5,15 @@ import logging
 from CompressionLibrary.utils import calculate_model_weights
 from CompressionLibrary.CompressionTechniques import *
 from CompressionLibrary.custom_callbacks import EarlyStoppingReward
-import time
 
+
+
+resolver = tf.distribute.cluster_resolver.TPUClusterResolver(tpu='local')
+tf.config.experimental_connect_to_cluster(resolver)
+# This is the TPU initialization code that has to be at the beginning.
+tf.tpu.experimental.initialize_tpu_system(resolver)
+print("All devices: ", tf.config.list_logical_devices('TPU'))
+strategy = tf.distribute.TPUStrategy(resolver)
 
 def resize_image(image, shape = (224,224)):
   target_width = shape[0]
@@ -47,36 +54,38 @@ num_classes = info.features['label'].num_classes
 input_shape = info.features['image'].shape
 
 input_shape = (224,224,3)
+batch_size = 256
 
-optimizer = tf.keras.optimizers.Adam(1e-5)
-loss_object = tf.keras.losses.SparseCategoricalCrossentropy()
-train_metric = tf.keras.metrics.SparseCategoricalAccuracy()
-
-batch_size = 64
-
-model = tf.keras.applications.vgg16.VGG16(
-                        include_top=True,
-                        weights='imagenet',
-                        input_shape=(224,224,3),
-                        classes=num_classes,
-                        classifier_activation='softmax'
-                    )
-
-
-start = time.time()
-
-train_ds = train_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).shuffle(buffer_size=2000, reshuffle_each_iteration=True).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+train_ds = train_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).shuffle(buffer_size=1000, reshuffle_each_iteration=True).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 valid_ds = validation_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 test_ds = test_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
 
 
-model.compile(optimizer=optimizer, loss=loss_object,
-                metrics=train_metric)
+def create_model():
+  optimizer = tf.keras.optimizers.Adam(1e-5)
+  loss_object = tf.keras.losses.SparseCategoricalCrossentropy()
+  train_metric = tf.keras.metrics.SparseCategoricalAccuracy()
+
+  model = tf.keras.applications.vgg16.VGG16(
+                          include_top=True,
+                          weights='imagenet',
+                          input_shape=(224,224,3),
+                          classes=num_classes,
+                          classifier_activation='softmax'
+                      )
+
+  model.compile(optimizer=optimizer, loss=loss_object,
+                  metrics=train_metric)
+
+with strategy.scope():
+  model = create_model()
+  loss, acc_before = model.evaluate(valid_ds)
 
 
 weights_before = calculate_model_weights(model)
-loss, acc_before = model.evaluate(valid_ds)
+
+
 
 reward_before = acc_before
 
@@ -97,11 +106,11 @@ logger = logging.getLogger(__name__)
 
 tfds.disable_progress_bar()
 
-model.summary()
-
 new_layers = []
+optimizer = tf.keras.optimizers.Adam(1e-5)
+loss_object = tf.keras.losses.SparseCategoricalCrossentropy()
+train_metric = tf.keras.metrics.SparseCategoricalAccuracy()
 
-start_time = time.time()
 # Pruned 127 weights and kept same accuracy 1.0.
 # compressor = DeepCompression(model=model, dataset=train_ds,
 #                             optimizer=optimizer, loss=loss_object, metrics=train_metric, input_shape=input_shape)
@@ -119,7 +128,6 @@ compressor = InsertSVDConv(model=model, dataset=train_ds,
 compressor.compress_layer('block2_conv1')
 model = compressor.get_model()
 new_layers.append(compressor.new_layer_name)
-model.summary()
 
 
 compressor = DepthwiseSeparableConvolution(model=model, dataset=train_ds, tuning_epochs=10,
@@ -127,7 +135,7 @@ compressor = DepthwiseSeparableConvolution(model=model, dataset=train_ds, tuning
 compressor.compress_layer('block2_conv2')
 model = compressor.get_model()
 new_layers.append(compressor.new_layer_name)
-model.summary()
+
 
 
 compressor = FireLayerCompression(model=model, dataset=train_ds, tuning_epochs=10,
@@ -135,7 +143,7 @@ compressor = FireLayerCompression(model=model, dataset=train_ds, tuning_epochs=1
 compressor.compress_layer('block3_conv1')
 model = compressor.get_model()
 new_layers.append(compressor.new_layer_name)
-model.summary()
+
 
 
 compressor = MLPCompression(model=model, dataset=train_ds, tuning_epochs=10,
@@ -144,7 +152,7 @@ compressor = MLPCompression(model=model, dataset=train_ds, tuning_epochs=10,
 compressor.compress_layer('block3_conv2')
 model = compressor.get_model()
 new_layers.append(compressor.new_layer_name)
-model.summary()
+
 
 
 compressor = SparseConnectionsCompression(model=model, dataset=train_ds, tuning_epochs=10, num_batches=100, tuning_verbose=1, fine_tuning=False,
@@ -172,7 +180,7 @@ compressor = InsertDenseSVD(model=model, dataset=train_ds, tuning_epochs=4,
 compressor.compress_layer('fc1')
 model = compressor.get_model()
 new_layers.append(compressor.new_layer_name)
-model.summary()
+
 
 
 # compressor = InsertDenseSparse(model=model, dataset=train_ds,  tuning_epochs=10,
@@ -182,11 +190,6 @@ model.summary()
 # new_layers.append(compressor.new_layer_name)
 # model.summary()
 
-
-print("\n\n--- %s seconds --- \n\n" % (time.time() - start_time))
-
-
-model.summary()
 
 # compressor = SparseConvolutionCompression(model=model, dataset=train_ds, tuning_epochs=1, num_batches=10,
 #                             optimizer=optimizer, loss=loss_object, metrics=train_metric, input_shape=input_shape)
@@ -205,14 +208,17 @@ Rcb = EarlyStoppingReward(acc_before=acc_before, weights_before=weights_before, 
 
 callbacks.append(Rcb)
 
+model_path = '/mnt/mcdata/data/test_tpu_save'
+model.save(model_path)
 
+with strategy.scope():
+  model = tf.keras.models.load_model(model_path)
+  model.fit(train_ds, epochs=20, validation_data=valid_ds, callbacks=callbacks)
+  loss, valid_acc = model.evaluate(valid_ds)
+  weights_after = calculate_model_weights(model)
+  valid_reward = 1 - (weights_after/weights_before) + valid_acc
 
-model.fit(train_ds, epochs=20, validation_data=valid_ds, callbacks=callbacks)
-loss, valid_acc = model.evaluate(valid_ds)
-weights_after = calculate_model_weights(model)
-valid_reward = 1 - (weights_after/weights_before) + valid_acc
-
-print(f'Validation reward is {valid_reward}. The model has {weights_after} weights and {valid_acc} accuracy.')
-loss, test_acc = model.evaluate(test_ds)
-test_reward = 1 - (weights_after/weights_before) + test_acc
-print(f'Validation reward is {test_reward}. The model has {weights_after} weights and {test_acc} accuracy.')
+  print(f'Validation reward is {valid_reward}. The model has {weights_after} weights and {valid_acc} accuracy.')
+  loss, test_acc = model.evaluate(test_ds)
+  test_reward = 1 - (weights_after/weights_before) + test_acc
+  print(f'Validation reward is {test_reward}. The model has {weights_after} weights and {test_acc} accuracy.')
