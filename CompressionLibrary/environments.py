@@ -227,8 +227,7 @@ class ModelCompressionEnv():
         self._state = self.get_state('current_state')
 
         self._episode_ended = False
-        self.weights_before = int(
-            np.sum([K.count_params(w) for w in self.model.trainable_weights]))
+        self.weights_before = int(np.sum([K.count_params(w) for w in self.model.trainable_weights]))
 
         self.chosen_actions = []
 

@@ -38,8 +38,6 @@ class ModelCompression:
         self.tuning_epochs = tuning_epochs
         self.logger = logging.getLogger(__name__)
         self.model_changes = {}
-        self.weights_before = None
-        self.weights_after = None
         self.target_layer_type = None
         self.tuning_verbose = tuning_verbose
         self.new_layer_name = None
@@ -137,7 +135,6 @@ class ModelCompression:
 
         self.logger.debug(f'Removed layer {layer_name} had {layer_weights_before} weights. New layer has {layer_weight_after} weights. Difference is {w_diff}')
 
-        self.weights_after = self.weights_before - layer_weights_before + layer_weight_after
 
         self.logger.debug('Finished compression')
 
@@ -244,8 +241,8 @@ class InsertDenseSVD(ModelCompression):
         weights_before = np.sum([K.count_params(w) for w in old_layer.trainable_weights])
         weights_after = np.sum([K.count_params(w) for w in new_layer.trainable_weights])
 
-        self.logger.debug('Replaced layer was using {weights_before} weights.')
-        self.logger.debug('DenseSVD  is using {weights_after} weights.')
+        self.logger.debug(f'Replaced layer was using {weights_before} weights.')
+        self.logger.debug(f'DenseSVD  is using {weights_after} weights.')
 
         return new_layer, new_layer.name, weights_before, weights_after
 
