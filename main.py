@@ -1,4 +1,3 @@
-from unittest import result
 import tensorflow as tf
 import tensorflow_datasets as tfds
 import logging
@@ -77,6 +76,7 @@ def create_model():
 
   model.compile(optimizer=optimizer, loss=loss_object,
                   metrics=train_metric)
+  return model
 
 with strategy.scope():
   model = create_model()

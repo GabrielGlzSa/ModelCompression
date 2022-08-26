@@ -5,8 +5,7 @@
 # Embedded file name: ./ModelCompression/CompressionTechniques.py
 # Compiled at: 2022-05-16 17:17:52
 # Size of source mod 2**32: 57841 bytes
-from distutils.command.config import config
-from gc import callbacks
+
 import math, tensorflow as tf, tensorflow.keras.backend as K, numpy as np, logging
 import time
 from CompressionLibrary.custom_callbacks import AddSparseConnectionsCallback

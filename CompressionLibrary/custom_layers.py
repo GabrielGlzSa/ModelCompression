@@ -1,5 +1,3 @@
-from distutils.command.config import config
-from tkinter.ttk import _Padding
 import tensorflow as tf
 from CompressionLibrary.custom_constraints import kNonZeroes, SparseWeights
 from CompressionLibrary.regularizers import L1L2SRegularizer

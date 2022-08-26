@@ -16,7 +16,7 @@ def calculate_model_weights(model):
         trainable_previous_config = layer.trainable
         # Set layer to trainable to calculate number of parameters.
         layer.trainable = True
-
+        
         if 'DeepComp' in layer.name:
             weights, _ = layer.get_weights()
             num_zeroes = tf.math.count_nonzero(tf.abs(weights) == 0.0).numpy()
@@ -43,7 +43,7 @@ def calculate_model_weights(model):
         else:
             weights_after = np.sum([K.count_params(w) for w in layer.trainable_weights])
 
-        logger.info(f'Layer {layer.name} has {weights_after} weights. Previous value was {weights_before}. {weights_after-weights_before} weights were freed.')
+        logger.info(f'Layer {layer.name} has {weights_after} weights.')
         total_weights += weights_after
         # Return layer to previous trainable state
         layer.trainable = trainable_previous_config
