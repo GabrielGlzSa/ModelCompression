@@ -5,6 +5,15 @@ from CompressionLibrary.utils import calculate_model_weights
 from CompressionLibrary.CompressionTechniques import *
 from CompressionLibrary.custom_callbacks import EarlyStoppingReward
 
+
+
+resolver = tf.distribute.cluster_resolver.TPUClusterResolver(tpu='local')
+tf.config.experimental_connect_to_cluster(resolver)
+# This is the TPU initialization code that has to be at the beginning.
+tf.tpu.experimental.initialize_tpu_system(resolver)
+print("All devices: ", tf.config.list_logical_devices('TPU'))
+strategy = tf.distribute.TPUStrategy(resolver)
+
 def resize_image(image, shape = (224,224)):
   target_width = shape[0]
   target_height = shape[1]
@@ -35,7 +44,7 @@ def imagenet_preprocessing(img, label):
     return img, label
 
 splits, info = tfds.load('imagenet2012', as_supervised=True, with_info=True, shuffle_files=True, 
-                            split=['train[:80%]', 'train[80%:]', 'test'], data_dir='./data')
+                            split=['train[:80%]', 'train[80%:]', 'test'], data_dir='/mnt/disks/mcdata/data')
 
 (train_examples, validation_examples, test_examples) = splits
 num_examples = info.splits['train'].num_examples
@@ -44,7 +53,7 @@ num_classes = info.features['label'].num_classes
 input_shape = info.features['image'].shape
 
 input_shape = (224,224,3)
-batch_size = 32
+batch_size = 256
 
 train_ds = train_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).shuffle(buffer_size=1000, reshuffle_each_iteration=True).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 valid_ds = validation_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(batch_size).prefetch(tf.data.AUTOTUNE)
@@ -69,14 +78,14 @@ def create_model():
                   metrics=train_metric)
   return model
 
-
-model = create_model()
-# loss, acc_before = model.evaluate(valid_ds)
+with strategy.scope():
+  model = create_model()
+  loss, acc_before = model.evaluate(valid_ds)
 
 
 weights_before = calculate_model_weights(model)
 
-acc_before = 0.83
+
 
 reward_before = acc_before
 
@@ -114,74 +123,72 @@ train_metric = tf.keras.metrics.SparseCategoricalAccuracy()
 # new_layers.append(compressor.new_layer_name)
 
 
-# compressor = InsertSVDConv(model=model, dataset=train_ds,
-#                             optimizer=optimizer, loss=loss_object, metrics=train_metric, input_shape=input_shape)
-# compressor.compress_layer('block2_conv1')
-# model = compressor.get_model()
-# new_layers.append(compressor.new_layer_name)
-
-
-# compressor = DepthwiseSeparableConvolution(model=model, dataset=train_ds, tuning_epochs=10,
-#                             optimizer=optimizer, loss=loss_object, metrics=train_metric, input_shape=input_shape)
-# compressor.compress_layer('block2_conv2')
-# model = compressor.get_model()
-# new_layers.append(compressor.new_layer_name)
-
-
-
-# compressor = FireLayerCompression(model=model, dataset=train_ds, tuning_epochs=10,
-#                                   optimizer=optimizer, loss=loss_object, metrics=train_metric, input_shape=input_shape)
-# compressor.compress_layer('block3_conv1')
-# model = compressor.get_model()
-# new_layers.append(compressor.new_layer_name)
-
-
-
-# compressor = MLPCompression(model=model, dataset=train_ds, tuning_epochs=10,
-#                             optimizer=optimizer, loss=loss_object, metrics=train_metric, input_shape=input_shape)
-
-# compressor.compress_layer('block3_conv2')
-# model = compressor.get_model()
-# new_layers.append(compressor.new_layer_name)
-
-
-
-# compressor = SparseConnectionsCompression(model=model, dataset=train_ds, tuning_epochs=10, num_batches=100, tuning_verbose=1, fine_tuning=False,
-#                                           optimizer=optimizer, loss=loss_object, metrics=train_metric, input_shape=input_shape, callbacks=callbacks)
-# compressor.compress_layer('block5_conv1',target_perc=0.75, conn_perc_per_epoch=0.15)
-# model = compressor.get_model()
-# new_layers.append(compressor.new_layer_name)
-# callbacks = compressor.callbacks
-
-# compressor = SparseConnectionsCompression(model=model, dataset=train_ds, tuning_epochs=10, num_batches=100, tuning_verbose=1, fine_tuning=False,
-#                                           optimizer=optimizer, loss=loss_object, metrics=train_metric, input_shape=input_shape, callbacks=callbacks)
-# compressor.compress_layer('block5_conv3',target_perc=0.75, conn_perc_per_epoch=0.15)
-# new_layers.append(compressor.new_layer_name)
-# model = compressor.get_model()
-# callbacks = compressor.callbacks
-
-compressor = SparseConvolutionCompression(model=model, dataset=train_ds, tuning_epochs=10, fine_tuning=False, num_batches=100,
+compressor = InsertSVDConv(model=model, dataset=train_ds,
                             optimizer=optimizer, loss=loss_object, metrics=train_metric, input_shape=input_shape)
-compressor.callbacks = callbacks
-compressor.compress_layer('block2_conv1', new_layer_iterations=10000, new_layer_iterations_sparse=30000, new_layer_verbose=True)
+compressor.compress_layer('block2_conv1')
+model = compressor.get_model()
+new_layers.append(compressor.new_layer_name)
+
+
+compressor = DepthwiseSeparableConvolution(model=model, dataset=train_ds, tuning_epochs=10,
+                            optimizer=optimizer, loss=loss_object, metrics=train_metric, input_shape=input_shape)
+compressor.compress_layer('block2_conv2')
+model = compressor.get_model()
+new_layers.append(compressor.new_layer_name)
+
+
+
+compressor = FireLayerCompression(model=model, dataset=train_ds, tuning_epochs=10,
+                                  optimizer=optimizer, loss=loss_object, metrics=train_metric, input_shape=input_shape)
+compressor.compress_layer('block3_conv1')
+model = compressor.get_model()
+new_layers.append(compressor.new_layer_name)
+
+
+
+compressor = MLPCompression(model=model, dataset=train_ds, tuning_epochs=10,
+                            optimizer=optimizer, loss=loss_object, metrics=train_metric, input_shape=input_shape)
+
+compressor.compress_layer('block3_conv2')
+model = compressor.get_model()
+new_layers.append(compressor.new_layer_name)
+
+
+
+compressor = SparseConnectionsCompression(model=model, dataset=train_ds, tuning_epochs=10, num_batches=100, tuning_verbose=1, fine_tuning=False,
+                                          optimizer=optimizer, loss=loss_object, metrics=train_metric, input_shape=input_shape, callbacks=callbacks)
+compressor.compress_layer('block5_conv1',target_perc=0.75, conn_perc_per_epoch=0.15)
+model = compressor.get_model()
+new_layers.append(compressor.new_layer_name)
+callbacks = compressor.callbacks
+
+compressor = SparseConnectionsCompression(model=model, dataset=train_ds, tuning_epochs=10, num_batches=100, tuning_verbose=1, fine_tuning=False,
+                                          optimizer=optimizer, loss=loss_object, metrics=train_metric, input_shape=input_shape, callbacks=callbacks)
+compressor.compress_layer('block5_conv3',target_perc=0.75, conn_perc_per_epoch=0.15)
+new_layers.append(compressor.new_layer_name)
 model = compressor.get_model()
 callbacks = compressor.callbacks
 
-
-# compressor = InsertDenseSVD(model=model, dataset=train_ds, tuning_epochs=4,
+# compressor = SparseConvolutionCompression(model=model, dataset=train_ds, tuning_epochs=10, fine_tuning=True, num_batches=100,
 #                             optimizer=optimizer, loss=loss_object, metrics=train_metric, input_shape=input_shape)
-# compressor.compress_layer('fc1')
-# model = compressor.get_model()
-# new_layers.append(compressor.new_layer_name)
+# compressor.compress_layer('block2_conv1', new_layer_iterations=10000, new_layer_iterations_sparse=30000, new_layer_verbose=True)
+
+
+
+compressor = InsertDenseSVD(model=model, dataset=train_ds, tuning_epochs=4,
+                            optimizer=optimizer, loss=loss_object, metrics=train_metric, input_shape=input_shape)
+compressor.compress_layer('fc1')
+model = compressor.get_model()
+new_layers.append(compressor.new_layer_name)
 
 
 
 # compressor = InsertDenseSparse(model=model, dataset=train_ds,  tuning_epochs=10,
 #                             optimizer=optimizer, loss=loss_object, metrics=train_metric, input_shape=input_shape)
-# compressor.compress_layer('fc2', new_layer_iterations=200, new_layer_verbose=True)
+# compressor.compress_layer('fc2', new_layer_iterations=20000, new_layer_verbose=True)
 # model = compressor.get_model()
 # new_layers.append(compressor.new_layer_name)
-
+# model.summary()
 
 
 # compressor = SparseConvolutionCompression(model=model, dataset=train_ds, tuning_epochs=1, num_batches=10,
@@ -201,16 +208,17 @@ Rcb = EarlyStoppingReward(acc_before=acc_before, weights_before=weights_before, 
 
 callbacks.append(Rcb)
 
-model_path = './data/custom_model'
+model_path = '/mnt/mcdata/data/test_tpu_save'
 model.save(model_path)
 
-model = tf.keras.models.load_model(model_path)
-model.fit(train_ds, epochs=20, validation_data=valid_ds, callbacks=callbacks)
-loss, valid_acc = model.evaluate(valid_ds)
-weights_after = calculate_model_weights(model)
-valid_reward = 1 - (weights_after/weights_before) + valid_acc
+with strategy.scope():
+  model = tf.keras.models.load_model(model_path)
+  model.fit(train_ds, epochs=20, validation_data=valid_ds, callbacks=callbacks)
+  loss, valid_acc = model.evaluate(valid_ds)
+  weights_after = calculate_model_weights(model)
+  valid_reward = 1 - (weights_after/weights_before) + valid_acc
 
-print(f'Validation reward is {valid_reward}. The model has {weights_after} weights and {valid_acc} accuracy.')
-loss, test_acc = model.evaluate(test_ds)
-test_reward = 1 - (weights_after/weights_before) + test_acc
-print(f'Validation reward is {test_reward}. The model has {weights_after} weights and {test_acc} accuracy.')
+  print(f'Validation reward is {valid_reward}. The model has {weights_after} weights and {valid_acc} accuracy.')
+  loss, test_acc = model.evaluate(test_ds)
+  test_reward = 1 - (weights_after/weights_before) + test_acc
+  print(f'Validation reward is {test_reward}. The model has {weights_after} weights and {test_acc} accuracy.')

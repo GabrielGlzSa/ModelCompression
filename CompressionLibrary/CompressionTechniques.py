@@ -215,27 +215,30 @@ class InsertDenseSVD(ModelCompression):
         self.target_layer_type = 'dense'
 
     def get_new_layer(self, old_layer):
-        weights, _ = old_layer.get_weights()
+        weights, bias = old_layer.get_weights()
         _ , units = weights.shape
-        units = units//12
+        hidden_units = units//12
+        activation = old_layer.get_config()['activation']
 
         weights = tf.constant(weights, dtype='float32')
         s, u, v = tf.linalg.svd(weights, full_matrices=True)
-        u = tf.slice(u, begin=[0, 0], size=[u.shape[0], units])
-        s = tf.slice(s, begin=[0], size=[units])
+        u = tf.slice(u, begin=[0, 0], size=[weights.shape[0], hidden_units])
+        s = tf.slice(s, begin=[0], size=[hidden_units])
 
         # Transpose V as V is returned as V^T.
-        v = tf.slice(tf.linalg.matrix_transpose(v), begin=[0, 0], size=[units,v.shape[1]])
+        v = tf.slice(tf.linalg.matrix_transpose(v), begin=[0, 0], size=[hidden_units, units])
         n = tf.matmul(tf.linalg.diag(s), v)
         new_weights = tf.matmul(u, n)
         loss = tf.reduce_mean(tf.square(weights - new_weights))
         self.logger.debug(f'New weights have MSE of {loss}.')
 
-        new_layer = DenseSVD(s_shape=s.shape, u_shape=u.shape, v_shape=v.shape,
-                  activation=(old_layer.get_config()['activation']),
+        new_layer = DenseSVD(units=units, hidden_units=hidden_units,
+                  activation=activation,
                   name=old_layer.name + '/DenseSVD')
 
         new_layer(old_layer.input)
+
+        new_layer.set_weights([u.numpy(), n, bias])
         
         weights_before = np.sum([K.count_params(w) for w in old_layer.trainable_weights])
         weights_after = np.sum([K.count_params(w) for w in new_layer.trainable_weights])
@@ -256,7 +259,7 @@ class InsertDenseSparse(ModelCompression):
     def get_new_layer(self, old_layer):
         weights, bias = old_layer.get_weights()
         features, units = weights.shape
-        
+        activation=old_layer.get_config()['activation']
         basis_vectors = units//6
         k_basis_vectors = basis_vectors//3
 
@@ -286,8 +289,7 @@ class InsertDenseSparse(ModelCompression):
         loss = tf.reduce_mean(tf.square(weights - pred))
         self.logger.info('Took {} secs for {} iterations and {} MSE.'.format(training_time, self.new_layer_iterations, loss))
 
-        new_layer = SparseSVD(units, features, basis_vectors, k_basis_vectors,
-                  activation=(old_layer.get_config()['activation']),
+        new_layer = SparseSVD(units=units, basis_vectors=basis_vectors, k_basis_vectors=k_basis_vectors, activation=activation,
                   name=old_layer.name + '/SparseSVD')
 
         new_layer(old_layer.input)
@@ -296,12 +298,12 @@ class InsertDenseSparse(ModelCompression):
         num_zeroes_sparse = tf.math.count_nonzero(sparse_dict == 0.0).numpy()
         non_zeroes_sparse = tf.math.count_nonzero(sparse_dict != 0.0).numpy()
 
-        self.logger.debug('Sparse dict has {} zeroes and {} non-zeroes.'.format(num_zeroes_sparse, non_zeroes_sparse))
+        self.logger.debug(f'Sparse dict has {num_zeroes_sparse} zeroes and {non_zeroes_sparse} non-zeroes.')
         
         weights_before = np.sum([K.count_params(w) for w in old_layer.trainable_weights])
         weights_after = tf.size(basis) + non_zeroes_sparse + tf.size(bias)
 
-        self.logger.debug('Basis has {} weights, sparse dict {} and bias {}'.format(tf.size(basis), non_zeroes_sparse, tf.size(bias)))
+        self.logger.debug(f'Basis has {tf.size(basis)} weights, sparse dict {non_zeroes_sparse} and bias {tf.size(bias)}')
 
         return new_layer, new_layer.name, weights_before, weights_after
 
@@ -343,7 +345,7 @@ class DepthwiseSeparableConvolution(ModelCompression):
         filters = config['filters']
         kernel_size = config['kernel_size']
         padding = config['padding']
-        new_layer = tf.keras.layers.SeparableConv2D(hidden_filters=filters, kernel_size=kernel_size, padding=padding,
+        new_layer = tf.keras.layers.SeparableConv2D(filters=filters, kernel_size=kernel_size, padding=padding,
                   name=old_layer.name + '/DepthwiseSeparableLayer')
 
         new_layer(old_layer.input)
@@ -351,8 +353,8 @@ class DepthwiseSeparableConvolution(ModelCompression):
         weights_before = np.sum([K.count_params(w) for w in old_layer.trainable_weights])
         weights_after = np.sum([K.count_params(w) for w in new_layer.trainable_weights])
 
-        self.logger.debug('Replaced layer was using {} weights.'.format(weights_before))
-        self.logger.debug('DepthWise Separable is using {} weights.'.format(weights_after))
+        self.logger.debug(f'Replaced layer was using {weights_before} weights.')
+        self.logger.debug(f'DepthWise Separable is using {weights_after} weights.')
 
         return new_layer, new_layer.name, weights_before, weights_after
 
@@ -386,8 +388,8 @@ class FireLayerCompression(ModelCompression):
         weights_before = np.sum([K.count_params(w) for w in old_layer.trainable_weights])
         weights_after = np.sum([K.count_params(w) for w in new_layer.trainable_weights])
 
-        self.logger.debug('Replaced layer was using {} weights.'.format(weights_before))
-        self.logger.debug('FireLayer is using {} weights.'.format(weights_after))
+        self.logger.debug(f'Replaced layer was using {weights_before} weights.')
+        self.logger.debug(f'FireLayer is using {weights_after} weights.')
 
         return new_layer, new_layer.name, weights_before, weights_after
 
@@ -405,18 +407,37 @@ class MLPCompression(ModelCompression):
         kernel_size = config['kernel_size']
         activation = config['activation']
         padding = config['padding']
+        
+        kernel, bias = old_layer.get_weights()
 
-        new_layer = MLPConv(kernel_size=kernel_size, filters=filters, padding=padding,
+        weights = tf.reshape(kernel, shape=[-1, filters])
+
+        hidden_units = filters //6
+        s, u, v = tf.linalg.svd(weights, full_matrices=True)
+        u = tf.slice(u, begin=[0, 0], size=[weights.shape[0], hidden_units])
+        s = tf.slice(s, begin=[0], size=[hidden_units])
+
+        # Transpose V as V is returned as V^T.
+        v = tf.slice(tf.linalg.matrix_transpose(v), begin=[0, 0], size=[hidden_units, filters])
+        n = tf.matmul(tf.linalg.diag(s), v)
+        new_weights = tf.matmul(u, n)
+        loss = tf.reduce_mean(tf.square(weights - new_weights))
+        print(f'New weights have MSE of {loss}.')
+
+
+        new_layer = MLPConv(filters=filters, hidden_units=hidden_units, kernel_size=kernel_size, padding=padding,
                   activation=activation,
                   name=old_layer.name + '/MLPConv')
                 
         new_layer(old_layer.input)
 
+        new_layer.set_weights([u, n, bias])
+
         weights_before = np.sum([K.count_params(w) for w in old_layer.trainable_weights])
         weights_after = np.sum([K.count_params(w) for w in new_layer.trainable_weights])
 
-        self.logger.debug('Replaced layer was using {} weights.'.format(weights_before))
-        self.logger.debug('MLPConv is using {} weights.'.format(weights_after))
+        self.logger.debug(f'Replaced layer was using {weights_before} weights.')
+        self.logger.debug(f'MLPConv is using {weights_after} weights.')
 
         return new_layer, new_layer.name, weights_before, weights_after
 
@@ -482,7 +503,7 @@ class SparseConnectionsCompression(ModelCompression):
 
         weights_after = weights_before - int(total_connections * (1-self.target_perc)) * channel_weights 
 
-        self.logger.debug('Sparse Connections should use {} of {} weights. Final number of weights will be calculated after fine-tuning.'.format(weights_after, weights_before))
+        self.logger.debug(f'Sparse Connections should use {weights_after} of {weights_before} weights. Final number of weights will be calculated after fine-tuning.')
        
 
         return new_layer, new_layer.name, weights_before, weights_after
@@ -550,14 +571,14 @@ class SparseConvolutionCompression(ModelCompression):
             gradients = tape.gradient(loss, [S, Q])
             optimizer.apply_gradients(zip(gradients, [S, Q]))
             if self.new_layer_verbose and i % 1000 == 0:
-                self.logger.debug('Epoch {} Loss: {}'.format(i, loss))
+                self.logger.debug(f'Epoch {i} Loss: {loss}')
 
         training_time = time.time() - start_time
         self.logger.info('Took {} secs for {} iterations and {} MSE.'.format(training_time, self.new_layer_iterations_sparse, loss))
 
-        self.logger.debug('Matrix P has shape {}'.format(P.shape))
-        self.logger.debug('Matrix Q has shape {}'.format(Q.shape))
-        self.logger.debug('Matrix S has shape {}'.format(S.shape))
+        self.logger.debug(f'Matrix P has shape {P.shape}')
+        self.logger.debug(f'Matrix Q has shape {Q.shape}')
+        self.logger.debug(f'Matrix S has shape {S.shape}')
         return P.numpy(), Q.numpy(), S.numpy()
 
     def get_new_layer(self, old_layer):
@@ -565,14 +586,13 @@ class SparseConvolutionCompression(ModelCompression):
         kernel, bias = old_layer.get_weights()
         _, _, channels, filters = kernel.shape
         self.bases = max(channels // 8, 4)
-        self.logger.debug('Using {} bases for {} input channels.'.format(self.bases, channels))
+        self.logger.debug(f'Using {self.bases} bases for {channels} input channels.')
         activation = config['activation']
         kernel_size =config['kernel_size']
         padding = config['padding']
 
         P, Q, S = self.find_pqs(old_layer)
         new_layer = SparseConvolution2D(kernel_size=kernel_size, filters=filters, padding=padding,
-                  PQS=[P, Q, S],
                   activation=activation,
                   bases=(self.bases),
                   name=old_layer.name + '/SparseConv2D')
@@ -585,8 +605,8 @@ class SparseConvolutionCompression(ModelCompression):
         weights_after = tf.size(P) + tf.size(Q) + (tf.size(S) - num_zeroes_sparse) + tf.size(bias)
 
 
-        self.logger.debug('Replaced layer was using {} weights.'.format(weights_before))
-        self.logger.debug('Sparse Conv2D is using {} weights. It has {} zeroes that were not counted. '.format(weights_after, num_zeroes_sparse))
+        self.logger.debug(f'Replaced layer was using {weights_before} weights.')
+        self.logger.debug(f'Sparse Conv2D is using {weights_after} weights. It has {num_zeroes_sparse} zeroes that were not counted. ')
 
 
         return new_layer, new_layer.name, weights_before, weights_after
