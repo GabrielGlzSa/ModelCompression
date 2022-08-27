@@ -10,14 +10,14 @@ from CompressionLibrary.utils import calculate_model_weights
 import logging
 
 class ModelCompressionEnv():
-    def __init__(self, compressors_list, model_path, compr_params,
+    def __init__(self, compressors_list, create_model_func, compr_params,
                  train_ds, validation_ds, test_ds,
-                 layer_name_list, input_shape, current_state_source='layer_input', next_state_source='layer_output', verbose=0, get_state_from='validation', tuning_epochs=20, num_feature_maps=128, tuning_batch_size=32):
+                 layer_name_list, input_shape, current_state_source='layer_input', next_state_source='layer_output', verbose=0, get_state_from='validation', tuning_epochs=20, num_feature_maps=128, tuning_batch_size=32, strategy=None):
 
         self._episode_ended = False
         self.verbose = verbose
         self.logger = logging.getLogger(__name__)
-        self.model_path = model_path
+        self.create_model_func = create_model_func
         self.train_ds = train_ds
         self.validation_ds = validation_ds
         self.test_ds = test_ds
@@ -31,9 +31,10 @@ class ModelCompressionEnv():
         self.tuning_batch_size = tuning_batch_size
         self.tuning_epochs = tuning_epochs
         self.get_state_from = get_state_from
+        self.strategy = strategy
         self.callbacks = []
 
-        self.model = tf.keras.models.load_model(model_path, compile=True)
+        self.model = self.create_model_func()
         self.optimizer = tf.keras.optimizers.Adam(1e-5)
         self.loss_object = tf.keras.losses.SparseCategoricalCrossentropy()
         self.train_metric = tf.keras.metrics.SparseCategoricalAccuracy()
@@ -58,8 +59,6 @@ class ModelCompressionEnv():
                 self.dense_compressors.append(compressor)
             del temp_comp
 
-        self.model = tf.keras.models.load_model(model_path, compile=True)
-
         self._layer_counter = 0
 
         max_filters = self.get_highest_num_filters()
@@ -76,10 +75,19 @@ class ModelCompressionEnv():
 
         self.weights_before = int(np.sum([K.count_params(w) for w in self.model.trainable_weights]))
 
-        self.logger.debug('Evaluating model using test set.')
-        test_loss, self.test_acc_before = self.model.evaluate(self.test_ds, verbose=self.verbose)
-        self.logger.debug('Evaluating model using validation set.')
-        val_loss, self.val_acc_before = self.model.evaluate(self.validation_ds, verbose=self.verbose)
+        if strategy is not None:
+            self.logger.debug('Evaluating model using test set.')
+            test_loss, self.test_acc_before = self.model.evaluate(self.test_ds, verbose=self.verbose)
+            self.logger.debug('Evaluating model using validation set.')
+            val_loss, self.val_acc_before = self.model.evaluate(self.validation_ds, verbose=self.verbose)
+        else:
+            self.logger.debug('Found strategy. Using it to evaluate model.')
+            with strategy.scope():
+                self.model = self.create_model_func()
+                self.logger.debug('Evaluating model using test set.')
+                test_loss, self.test_acc_before = self.model.evaluate(self.test_ds, verbose=self.verbose)
+                self.logger.debug('Evaluating model using validation set.')
+                val_loss, self.val_acc_before = self.model.evaluate(self.validation_ds, verbose=self.verbose)
 
         self.logger.info('Finished environment initialization.')
 
@@ -184,35 +192,16 @@ class ModelCompressionEnv():
             if hasattr(self, 'conv_shape'):
                 if len(self._state.shape) == len(self.conv_shape):
                     b, h, w, c = self._state.shape
-
-                    # self.logger.debug('Generating indexes for reshaping conv state.')
-                    # indexes = [[i, x,y,z] for i in range(b) for x in range(h) for y in range(w) for z in range(c)]
-                    # indexes = tf.constant(indexes)
-                    # print(indexes)
-
-                    # self.logger.debug('Performing scatter_nd update.')
-                    # self._state = tf.scatter_nd(indexes, tf.reshape(self._state, shape=-1), self.conv_shape)
-
                     zeros = np.zeros(shape=(b,h,w,self.conv_shape[-1]))
                     zeros[:,:,:,:c] = self._state
                     self._state = zeros
 
                 elif len(self._state.shape) == len(self.dense_shape):
                     b, units = self._state.shape
-
-                    # self.logger.debug('Generating indexes for reshaping dense state.')
-                    # indexes = [[x,y] for x in range(b) for y in range(units)]
-                    # indexes = tf.constant(indexes)
-
-                    # self.logger.debug('Performing scatter_nd update.')
-                    # self._state = tf.scatter_nd(indexes, tf.reshape(self._state, shape=-1), self.dense_shape)
-
                     zeros = np.zeros(shape=(b,self.dense_shape[-1]))
                     zeros[:,:units] = self._state
                     self._state = zeros
 
-
-     
             self.logger.debug(f'The state was reshaped into shape {self._state.shape}')
 
             return self._state
@@ -220,7 +209,7 @@ class ModelCompressionEnv():
     def reset(self):
         self.logger.debug('---RESTARTING ENVIRONMENT---')
 
-        self.model = tf.keras.models.load_model(self.model_path, compile=True)
+        self.model = self.create_model_func()
         self.layer_name_list = self.original_layer_name_list.copy()
         self.callbacks = []
         self._layer_counter = 0
@@ -315,21 +304,44 @@ class ModelCompressionEnv():
                 Rcb = EarlyStoppingReward(acc_before=self.val_acc_before, weights_before=self.weights_before, verbose=1)
                 self.callbacks.append(Rcb)
 
-                # Train only the modified layers.
-                for layer in self.model.layers:
-                    if layer.name in self.layer_name_list:
+                if self.strategy:
+                    model_path = './temp_model'
+                    self.logger.debug('Strategy found. Using strategy to fit model.')
+                    self.model.save(model_path)
+                    with self.strategy.scope():
+                        self.model = tf.keras.models.load_model(model_path)
+                        # Train only the modified layers.
+                        for layer in self.model.layers:
+                            if layer.name in self.layer_name_list:
+                                layer.trainable = True
+                            else:
+                                layer.trainable = False
+                        self.model.summary()
+                        self.model.fit(self.train_ds, epochs=self.tuning_epochs, callbacks=self.callbacks, validation_data=self.validation_ds)
+
+                        # Set all layers back to trainable.
+                        for layer in self.model.layers:
+                            layer.trainable = True
+
+                        test_loss, test_acc_after = self.model.evaluate(self.test_ds, verbose=self.verbose)
+                        val_loss, val_acc_after = self.model.evaluate(self.validation_ds, verbose=self.verbose)
+                else:
+
+                    # Train only the modified layers.
+                    for layer in self.model.layers:
+                        if layer.name in self.layer_name_list:
+                            layer.trainable = True
+                        else:
+                            layer.trainable = False
+                    self.model.summary()
+                    self.model.fit(self.train_ds, epochs=self.tuning_epochs, callbacks=self.callbacks, validation_data=self.validation_ds)
+
+                    # Set all layers back to trainable.
+                    for layer in self.model.layers:
                         layer.trainable = True
-                    else:
-                        layer.trainable = False
-                self.model.summary()
-                self.model.fit(self.train_ds, epochs=self.tuning_epochs, callbacks=self.callbacks, validation_data=self.validation_ds)
 
-                # Set all layers back to trainable.
-                for layer in self.model.layers:
-                    layer.trainable = True
-
-                test_loss, test_acc_after = self.model.evaluate(self.test_ds, verbose=self.verbose)
-                val_loss, val_acc_after = self.model.evaluate(self.validation_ds, verbose=self.verbose)
+                    test_loss, test_acc_after = self.model.evaluate(self.test_ds, verbose=self.verbose)
+                    val_loss, val_acc_after = self.model.evaluate(self.validation_ds, verbose=self.verbose)
 
         reward = weight_diff + test_acc_after
         info['test_acc_before'] = self.test_acc_before

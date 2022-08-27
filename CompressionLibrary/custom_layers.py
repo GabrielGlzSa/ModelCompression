@@ -72,12 +72,12 @@ class ConvSVD(tf.keras.layers.Layer):
         self.filters = filters
         self.padding = padding.upper()
         if isinstance(strides, int):
-            self.strides = (strides, strides)
+            self.strides = list(strides, strides)
         else:
             if isinstance(strides, tuple) or isinstance(strides, list):
                 self.strides = strides
         if isinstance(kernel_size, int):
-            kernel_size = (kernel_size, kernel_size)
+            kernel_size = list(kernel_size, kernel_size)
  
         self.kernel_size = kernel_size
         self.activation = tf.keras.activations.get(activation)
@@ -225,7 +225,7 @@ class SparseConnectionsConv2D(tf.keras.layers.Conv2D):
 
     def get_config(self):
         config = super(SparseConnectionsConv2D, self).get_config().copy()
-        config.update({'connections': tf.reduce_sum(self.sparse_connections)})
+        config.update({'sparse_connections': self.sparse_connections})
         return config
     
     def build(self, input_shape):

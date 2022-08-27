@@ -55,3 +55,22 @@ class DQNAgent:
         return action
 
 
+
+class RandomAgent:
+    def __init__(self, name, n_actions):
+        """A simple DQN agent"""
+        self.name = name
+        self.n_actions = n_actions
+
+    def get_qvalues(self, state_t):
+        """Return dummy Q-values that will not be used."""
+        return tf.zeros(shape=[self.n_actions], dtype='float32')
+
+    def sample_actions(self, qvalues):
+        """pick actions given qvalues. Uses epsilon-greedy exploration strategy. """
+        return np.random.choice(range(self.n_actions), size=qvalues.shape[0], replace=True)
+
+    def sample_actions_using_mode(self, qvalues):
+        """pick random action. """
+        random_action = np.random.choice(range(self.n_actions), size=1)
+        return random_action

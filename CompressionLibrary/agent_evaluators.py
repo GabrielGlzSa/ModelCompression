@@ -6,25 +6,9 @@ import numpy as np
 import gc
 import logging
 
-def make_env_imagenet(dataset_name, train_ds, valid_ds, test_ds, input_shape, num_classes, layer_name_list, num_feature_maps, tuning_batch_size, current_state_source='layer_input', next_state_source='layer_output'):
+def make_env_imagenet(create_model, train_ds, valid_ds, test_ds, input_shape, layer_name_list, num_feature_maps, tuning_batch_size, current_state_source='layer_input', next_state_source='layer_output', strategy=None):
  
-    optimizer = tf.keras.optimizers.Adam(1e-5)
-    loss_object = tf.keras.losses.SparseCategoricalCrossentropy()
-    train_metric = tf.keras.metrics.SparseCategoricalAccuracy()
-    model = tf.keras.applications.vgg16.VGG16(
-                include_top=True,
-                weights='imagenet',
-                input_shape=(224,224,3),
-                classes=num_classes,
-                classifier_activation='softmax'
-            )
-
-    model.compile(optimizer=optimizer, loss=loss_object,
-                    metrics=train_metric)
-
-    model_path = './data/models/vgg16/test_'+dataset_name
-    model.save(model_path)
-
+    
 
     w_comprs = ['InsertDenseSVD', 'InsertDenseSparse',
                 'DeepCompression'] 
@@ -52,10 +36,10 @@ def make_env_imagenet(dataset_name, train_ds, valid_ds, test_ds, input_shape, nu
     parameters['SparseConnectionsCompression'] = {'layer_name': None, 
                                                   'target_perc': 0.75, 'conn_perc_per_epoch': 0.15}
 
-    env = ModelCompressionEnv(compressors_list, model_path, parameters,
+    env = ModelCompressionEnv(compressors_list, create_model, parameters,
                                       train_ds, valid_ds, test_ds,
                                       layer_name_list, input_shape, current_state_source=current_state_source, next_state_source=next_state_source, 
-                                      num_feature_maps=num_feature_maps, tuning_batch_size=tuning_batch_size, verbose=1)
+                                      num_feature_maps=num_feature_maps, tuning_batch_size=tuning_batch_size, verbose=1, strategy=strategy)
 
     return env
 

@@ -6,13 +6,19 @@ from CompressionLibrary.CompressionTechniques import *
 from CompressionLibrary.custom_callbacks import EarlyStoppingReward
 
 
+data_path = '/mnt/disks/mcdata/data'
+# data_path = './data'
 
+# Use below for TPU
 resolver = tf.distribute.cluster_resolver.TPUClusterResolver(tpu='local')
 tf.config.experimental_connect_to_cluster(resolver)
 # This is the TPU initialization code that has to be at the beginning.
 tf.tpu.experimental.initialize_tpu_system(resolver)
 print("All devices: ", tf.config.list_logical_devices('TPU'))
 strategy = tf.distribute.TPUStrategy(resolver)
+# Use below for GPU
+# strategy = tf.distribute.OneDeviceStrategy(device="/gpu:0")
+
 
 def resize_image(image, shape = (224,224)):
   target_width = shape[0]
@@ -44,7 +50,7 @@ def imagenet_preprocessing(img, label):
     return img, label
 
 splits, info = tfds.load('imagenet2012', as_supervised=True, with_info=True, shuffle_files=True, 
-                            split=['train[:80%]', 'train[80%:]', 'test'], data_dir='/mnt/disks/mcdata/data')
+                            split=['train[:80%]', 'train[80%:]', 'test'], data_dir=data_path)
 
 (train_examples, validation_examples, test_examples) = splits
 num_examples = info.splits['train'].num_examples
@@ -53,9 +59,9 @@ num_classes = info.features['label'].num_classes
 input_shape = info.features['image'].shape
 
 input_shape = (224,224,3)
-batch_size = 256
+batch_size = 1024
 
-train_ds = train_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).shuffle(buffer_size=1000, reshuffle_each_iteration=True).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+train_ds = train_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).shuffle(buffer_size=2048, reshuffle_each_iteration=True).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 valid_ds = validation_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 test_ds = test_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
@@ -80,9 +86,11 @@ def create_model():
 
 with strategy.scope():
   model = create_model()
-  loss, acc_before = model.evaluate(valid_ds)
+  # loss, acc_before = model.evaluate(valid_ds)
+  acc_before = 0.8321
 
 
+model.summary()
 weights_before = calculate_model_weights(model)
 
 
@@ -162,17 +170,12 @@ model = compressor.get_model()
 new_layers.append(compressor.new_layer_name)
 callbacks = compressor.callbacks
 
-compressor = SparseConnectionsCompression(model=model, dataset=train_ds, tuning_epochs=10, num_batches=100, tuning_verbose=1, fine_tuning=False,
-                                          optimizer=optimizer, loss=loss_object, metrics=train_metric, input_shape=input_shape, callbacks=callbacks)
-compressor.compress_layer('block5_conv3',target_perc=0.75, conn_perc_per_epoch=0.15)
-new_layers.append(compressor.new_layer_name)
+
+compressor = SparseConvolutionCompression(model=model, dataset=train_ds, tuning_epochs=10, fine_tuning=False, num_batches=100,
+                            optimizer=optimizer, loss=loss_object, metrics=train_metric, input_shape=input_shape)
+compressor.compress_layer('block5_conv3', new_layer_iterations=10000, new_layer_iterations_sparse=30000, new_layer_verbose=True)
 model = compressor.get_model()
-callbacks = compressor.callbacks
-
-# compressor = SparseConvolutionCompression(model=model, dataset=train_ds, tuning_epochs=10, fine_tuning=True, num_batches=100,
-#                             optimizer=optimizer, loss=loss_object, metrics=train_metric, input_shape=input_shape)
-# compressor.compress_layer('block2_conv1', new_layer_iterations=10000, new_layer_iterations_sparse=30000, new_layer_verbose=True)
-
+new_layers.append(compressor.new_layer_name)
 
 
 compressor = InsertDenseSVD(model=model, dataset=train_ds, tuning_epochs=4,
@@ -183,17 +186,11 @@ new_layers.append(compressor.new_layer_name)
 
 
 
-# compressor = InsertDenseSparse(model=model, dataset=train_ds,  tuning_epochs=10,
-#                             optimizer=optimizer, loss=loss_object, metrics=train_metric, input_shape=input_shape)
-# compressor.compress_layer('fc2', new_layer_iterations=20000, new_layer_verbose=True)
-# model = compressor.get_model()
-# new_layers.append(compressor.new_layer_name)
-# model.summary()
-
-
-# compressor = SparseConvolutionCompression(model=model, dataset=train_ds, tuning_epochs=1, num_batches=10,
-#                             optimizer=optimizer, loss=loss_object, metrics=train_metric, input_shape=input_shape)
-# compressor.compress_layer('block3_conv1')
+compressor = InsertDenseSparse(model=model, dataset=train_ds,  tuning_epochs=10,
+                            optimizer=optimizer, loss=loss_object, metrics=train_metric, input_shape=input_shape)
+compressor.compress_layer('fc2', new_layer_iterations=2000, new_layer_verbose=True)
+model = compressor.get_model()
+new_layers.append(compressor.new_layer_name)
 
 
 for layer in model.layers:
@@ -208,7 +205,7 @@ Rcb = EarlyStoppingReward(acc_before=acc_before, weights_before=weights_before, 
 
 callbacks.append(Rcb)
 
-model_path = '/mnt/mcdata/data/test_tpu_save'
+model_path = data_path+'/test_tpu_save'
 model.save(model_path)
 
 with strategy.scope():
