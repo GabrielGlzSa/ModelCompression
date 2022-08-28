@@ -19,6 +19,7 @@ strategy = tf.distribute.TPUStrategy(resolver)
 # Use below for GPU
 # strategy = tf.distribute.OneDeviceStrategy(device="/gpu:0")
 
+print('Number of devices: {}'.format(strategy.num_replicas_in_sync))
 
 def resize_image(image, shape = (224,224)):
   target_width = shape[0]

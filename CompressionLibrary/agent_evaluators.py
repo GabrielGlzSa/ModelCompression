@@ -4,6 +4,7 @@ from CompressionLibrary.environments import ModelCompressionEnv
 import pandas as pd
 import numpy as np
 import gc
+import time
 import logging
 
 def make_env_imagenet(create_model, train_ds, valid_ds, test_ds, input_shape, layer_name_list, num_feature_maps, tuning_batch_size, current_state_source='layer_input', next_state_source='layer_output', strategy=None):
@@ -23,15 +24,15 @@ def make_env_imagenet(create_model, train_ds, valid_ds, test_ds, input_shape, la
         'layer_name': None, 'threshold': 0.001}
     parameters['ReplaceDenseWithGlobalAvgPool'] = {'layer_name': None}
     parameters['InsertDenseSVD'] = {'layer_name': None}
-    parameters['InsertDenseSparse'] = {'layer_name': None,  'new_layer_iterations':20000, 'new_layer_verbose':True}
+    parameters['InsertDenseSparse'] = {'layer_name': None,  'new_layer_iterations':2000, 'new_layer_verbose':True}
     parameters['InsertSVDConv'] = {'layer_name': None}
     parameters['DepthwiseSeparableConvolution'] = {'layer_name': None}
     parameters['FireLayerCompression'] = {'layer_name': None}
     parameters['MLPCompression'] = {'layer_name': None}
     parameters['SparseConvolutionCompression'] = {
         'layer_name': None, 
-        'new_layer_iterations': 10000,
-        'new_layer_iterations_sparse':30000,
+        'new_layer_iterations': 1000,
+        'new_layer_iterations_sparse':3000,
         'new_layer_verbose':True} 
     parameters['SparseConnectionsCompression'] = {'layer_name': None, 
                                                   'target_perc': 0.75, 'conn_perc_per_epoch': 0.15}
@@ -125,11 +126,12 @@ def evaluate_agents(env, conv_agent, fc_agent, save_name, n_games=2):
     infos = []
     df_results = pd.DataFrame()
     logger = logging.getLogger(__name__)
-
+    total_time = 0
     for game_id in range(n_games):
         tf.keras.backend.clear_session()
         s = env.reset()
         info = None
+        start = time.time()
         for k in range(1,len(env.layer_name_list)+1):
             next_layer_name = env.layer_name_list[env._layer_counter]
             layer = env.model.get_layer(next_layer_name)
@@ -148,8 +150,10 @@ def evaluate_agents(env, conv_agent, fc_agent, save_name, n_games=2):
             if done:
                 s = env.reset()
                 break
+        game_time = start - time.time()
         actions = info['actions']
-        logger.info(f'Actions taken in game {game_id} were  {actions} for a reward of {r}.')
+        logger.info(f'Actions taken in game {game_id} were  {actions} for a reward of {r}. Took {game_time} seconds.')
+        total_time += game_time
 
         df_results = df_results.append(info, ignore_index=True)
         # Calculate reward using stats before and after compression
@@ -160,5 +164,6 @@ def evaluate_agents(env, conv_agent, fc_agent, save_name, n_games=2):
         weights.append(info['weights_after'])
         infos.append(info['actions'])
     df_results.to_csv(save_name, index=False)
+    logger.info('Evaluation of {n_games} took {total_time} secs.')
 
     return np.mean(rewards), np.mean(acc), np.mean(weights)

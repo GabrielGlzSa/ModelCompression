@@ -34,6 +34,8 @@ class ModelCompressionEnv():
         self.strategy = strategy
         self.callbacks = []
 
+        self.save_model_path = '/mnt/disks/mcdata/data'
+
         self.model = self.create_model_func()
         self.optimizer = tf.keras.optimizers.Adam(1e-5)
         self.loss_object = tf.keras.losses.SparseCategoricalCrossentropy()
@@ -305,11 +307,10 @@ class ModelCompressionEnv():
                 self.callbacks.append(Rcb)
 
                 if self.strategy:
-                    model_path = './temp_model'
                     self.logger.debug('Strategy found. Using strategy to fit model.')
-                    self.model.save(model_path)
+                    self.model.save(self.save_model_path)
                     with self.strategy.scope():
-                        self.model = tf.keras.models.load_model(model_path)
+                        self.model = tf.keras.models.load_model(self.save_model_path)
                         # Train only the modified layers.
                         for layer in self.model.layers:
                             if layer.name in self.layer_name_list:

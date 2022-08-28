@@ -8,6 +8,22 @@ from CompressionLibrary.reinforcement_models import RandomAgent
 
 
 
+data_path = '/mnt/disks/mcdata/data'
+# data_path = './data'
+
+# Use below for TPU
+resolver = tf.distribute.cluster_resolver.TPUClusterResolver(tpu='local')
+tf.config.experimental_connect_to_cluster(resolver)
+# This is the TPU initialization code that has to be at the beginning.
+tf.tpu.experimental.initialize_tpu_system(resolver)
+print("All devices: ", tf.config.list_logical_devices('TPU'))
+strategy = tf.distribute.TPUStrategy(resolver)
+# Use below for GPU
+# strategy = tf.distribute.OneDeviceStrategy(device="/gpu:0")
+
+print('Number of devices: {}'.format(strategy.num_replicas_in_sync))
+
+
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s -%(levelname)s - %(funcName)s -  %(message)s')
 logging.root.setLevel(logging.DEBUG)
 
@@ -17,8 +33,8 @@ next_state = 'layer_output'
 
 eval_n_samples = 10
 n_samples_mode = 64
-rl_batch_size = 128
-tuning_batch_size = 32
+batch_size_per_replica = 64
+tuning_batch_size = batch_size_per_replica * strategy.num_replicas_in_sync
 
 
 layer_name_list = [ 'block2_conv1', 'block2_conv2', 
@@ -59,7 +75,7 @@ def imagenet_preprocessing(img, label):
     return img, label
 
 splits, info = tfds.load('imagenet2012', as_supervised=True, with_info=True, shuffle_files=True, 
-                            split=['train[:80%]', 'train[80%:]', 'test'], data_dir='./data')
+                            split=['train[:80%]', 'train[80%:]', 'test'], data_dir=data_path)
 
 (train_examples, validation_examples, test_examples) = splits
 num_examples = info.splits['train'].num_examples
@@ -88,12 +104,10 @@ def create_model():
 
     return model       
 
-train_ds = train_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).shuffle(buffer_size=1000, reshuffle_each_iteration=True).batch(tuning_batch_size).prefetch(tf.data.AUTOTUNE)
+train_ds = train_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).shuffle(buffer_size=2048, reshuffle_each_iteration=True).batch(tuning_batch_size).prefetch(tf.data.AUTOTUNE)
 valid_ds = validation_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(tuning_batch_size).prefetch(tf.data.AUTOTUNE)
 test_ds = test_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(tuning_batch_size).prefetch(tf.data.AUTOTUNE)
 
-
-strategy = tf.distribute.OneDeviceStrategy(device="/gpu:0")
 
 input_shape = (224,224,3)
 env = make_env_imagenet(create_model, train_ds, valid_ds, test_ds, input_shape, layer_name_list, n_samples_mode, tuning_batch_size, current_state, next_state, strategy)

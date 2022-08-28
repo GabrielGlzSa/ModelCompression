@@ -8,6 +8,9 @@ import tensorflow.keras.backend as K
 import gc
 import logging
 
+
+
+
 def calculate_model_weights(model):
     total_weights = 0
     logger = logging.getLogger(__name__)

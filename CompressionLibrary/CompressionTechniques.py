@@ -15,7 +15,7 @@ from CompressionLibrary.custom_layers import DenseSVD, SparseSVD, FireLayer, MLP
 class ModelCompression:
     __doc__ = '\n    Base class for compressing a deep learning model. The class takes a tensorflow\n    model and a dataset that will be used to fit a regression.\n    '
 
-    def __init__(self, model, optimizer, loss, metrics, input_shape, dataset, fine_tuning=False, tuning_verbose=1, tuning_epochs=10, num_batches=None, callbacks = None):
+    def __init__(self, model, optimizer, loss, metrics, input_shape, dataset, fine_tuning=False, tuning_verbose=1, tuning_epochs=10, num_batches=None, callbacks = None, strategy=None):
         """
 
         :param model: tensorflow model that will be optimized.
@@ -42,6 +42,7 @@ class ModelCompression:
         self.new_layer_name = None
         self.num_batches = num_batches
         self.callbacks = callbacks
+        self.strategy = strategy
         if num_batches is not None:
             self.dataset = self.dataset.take(num_batches)
 
