@@ -6,7 +6,6 @@ from CompressionLibrary.agent_evaluators import make_env_imagenet, evaluate_agen
 from CompressionLibrary.environments import *
 from CompressionLibrary.reinforcement_models import RandomAgent
 
-
 try:
   # Use below for TPU
   resolver = tf.distribute.cluster_resolver.TPUClusterResolver(tpu='local')
@@ -15,10 +14,9 @@ try:
   tf.tpu.experimental.initialize_tpu_system(resolver)
   print("All devices: ", tf.config.list_logical_devices('TPU'))
   strategy = tf.distribute.TPUStrategy(resolver)
-  print('Running on TPU ', resolver.cluster_spec().as_dict()['worker'])
   data_path = '/mnt/disks/mcdata/data'
 
-except ValueError:
+except:
   print('ERROR: Not connected to a TPU runtime; Using GPU strategy instead!')
   strategy = tf.distribute.OneDeviceStrategy(device="/gpu:0")
   data_path = './data'

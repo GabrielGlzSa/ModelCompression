@@ -156,7 +156,7 @@ class DeepCompression(ModelCompression):
         num_zeroes = tf.math.count_nonzero(tf.abs(new_weights[0]) == 0.0).numpy()
         weights_before = np.sum([K.count_params(w) for w in old_layer.trainable_weights])
         weights_after = weights_before - num_zeroes
-        old_layer._name = old_layer.name + 'DeepComp'
+        old_layer._name = old_layer.name + '/DeepComp'
 
         return old_layer, old_layer.name, weights_before, weights_after
 
