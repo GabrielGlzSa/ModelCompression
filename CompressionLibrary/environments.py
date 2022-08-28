@@ -77,19 +77,10 @@ class ModelCompressionEnv():
 
         self.weights_before = int(np.sum([K.count_params(w) for w in self.model.trainable_weights]))
 
-        if strategy is not None:
-            self.logger.debug('Evaluating model using test set.')
-            test_loss, self.test_acc_before = self.model.evaluate(self.test_ds, verbose=self.verbose)
-            self.logger.debug('Evaluating model using validation set.')
-            val_loss, self.val_acc_before = self.model.evaluate(self.validation_ds, verbose=self.verbose)
-        else:
-            self.logger.debug('Found strategy. Using it to evaluate model.')
-            with strategy.scope():
-                self.model = self.create_model_func()
-                self.logger.debug('Evaluating model using test set.')
-                test_loss, self.test_acc_before = self.model.evaluate(self.test_ds, verbose=self.verbose)
-                self.logger.debug('Evaluating model using validation set.')
-                val_loss, self.val_acc_before = self.model.evaluate(self.validation_ds, verbose=self.verbose)
+        self.logger.debug('Evaluating model using test set.')
+        test_loss, self.test_acc_before = self.model.evaluate(self.test_ds, verbose=self.verbose)
+        self.logger.debug('Evaluating model using validation set.')
+        val_loss, self.val_acc_before = self.model.evaluate(self.validation_ds, verbose=self.verbose)
 
         self.logger.info('Finished environment initialization.')
 
@@ -144,7 +135,7 @@ class ModelCompressionEnv():
 
         if self.strategy:
             num_batches = 1
-            
+
         self.logger.debug(f'For {self.num_feature_maps} samples, {num_batches} samples of {self.tuning_batch_size} are required.')
 
         if self.get_state_from == 'train':
@@ -269,8 +260,7 @@ class ModelCompressionEnv():
             
             class_ = getattr(CompressionTechniques, compressors[action])
 
-            compressor = class_(model=self.model, dataset=self.train_ds, optimizer=self.optimizer,
-                                loss=self.loss_object, metrics=self.train_metric, fine_tuning=False, input_shape=self.input_shape, tuning_verbose=self.verbose, callbacks=self.callbacks)
+            compressor = class_(model=self.model, dataset=self.train_ds, optimizer=self.optimizer, loss=self.loss_object, metrics=self.train_metric, fine_tuning=False, input_shape=self.input_shape, tuning_verbose=self.verbose, callbacks=self.callbacks)
 
 
             weights_before = calculate_model_weights(self.model)
@@ -328,8 +318,6 @@ class ModelCompressionEnv():
                         for layer in self.model.layers:
                             layer.trainable = True
 
-                        test_loss, test_acc_after = self.model.evaluate(self.test_ds, verbose=self.verbose)
-                        val_loss, val_acc_after = self.model.evaluate(self.validation_ds, verbose=self.verbose)
                 else:
 
                     # Train only the modified layers.
@@ -345,8 +333,8 @@ class ModelCompressionEnv():
                     for layer in self.model.layers:
                         layer.trainable = True
 
-                    test_loss, test_acc_after = self.model.evaluate(self.test_ds, verbose=self.verbose)
-                    val_loss, val_acc_after = self.model.evaluate(self.validation_ds, verbose=self.verbose)
+                test_loss, test_acc_after = self.model.evaluate(self.test_ds, verbose=self.verbose)
+                val_loss, val_acc_after = self.model.evaluate(self.validation_ds, verbose=self.verbose)
 
         reward = weight_diff + test_acc_after
         info['test_acc_before'] = self.test_acc_before

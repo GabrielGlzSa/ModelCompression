@@ -119,8 +119,9 @@ conv_n_actions, fc_n_actions = env.action_space()
 
 print(conv_shape, dense_shape)
 
-random_agent = RandomAgent('random', max(conv_n_actions, fc_n_actions))
+random_conv = RandomAgent('random_conv', conv_n_actions)
+random_fc = RandomAgent('random_fc', fc_n_actions)
 
-results = evaluate_agents(env, random_agent,random_agent, save_name='./data/test_evaluate.csv')
+results = evaluate_agents(env, random_conv,random_fc, save_name='./data/test_evaluate.csv')
 
 print(results)
