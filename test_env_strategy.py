@@ -7,19 +7,22 @@ from CompressionLibrary.environments import *
 from CompressionLibrary.reinforcement_models import RandomAgent
 
 
+try:
+  # Use below for TPU
+  resolver = tf.distribute.cluster_resolver.TPUClusterResolver(tpu='local')
+  tf.config.experimental_connect_to_cluster(resolver)
+  # This is the TPU initialization code that has to be at the beginning.
+  tf.tpu.experimental.initialize_tpu_system(resolver)
+  print("All devices: ", tf.config.list_logical_devices('TPU'))
+  strategy = tf.distribute.TPUStrategy(resolver)
+  print('Running on TPU ', resolver.cluster_spec().as_dict()['worker'])
+  data_path = '/mnt/disks/mcdata/data'
 
-data_path = '/mnt/disks/mcdata/data'
-# data_path = './data'
-
-# Use below for TPU
-resolver = tf.distribute.cluster_resolver.TPUClusterResolver(tpu='local')
-tf.config.experimental_connect_to_cluster(resolver)
-# This is the TPU initialization code that has to be at the beginning.
-tf.tpu.experimental.initialize_tpu_system(resolver)
-print("All devices: ", tf.config.list_logical_devices('TPU'))
-strategy = tf.distribute.TPUStrategy(resolver)
-# Use below for GPU
-# strategy = tf.distribute.OneDeviceStrategy(device="/gpu:0")
+except ValueError:
+  print('ERROR: Not connected to a TPU runtime; Using GPU strategy instead!')
+  strategy = tf.distribute.OneDeviceStrategy(device="/gpu:0")
+  data_path = './data'
+  
 
 print('Number of devices: {}'.format(strategy.num_replicas_in_sync))
 
