@@ -136,7 +136,7 @@ class FireLayer(tf.keras.layers.Layer):
     def get_config(self):
         config = super(FireLayer, self).get_config().copy()
         config.update({'squeeze_filters': self.squeeze_filters, 'expand1x1_filters': self.expand1x1_filters, 'expand3x3_filters': self.expand3x3_filters, 
-        'kernel_size': self.kernel_size, 'strides': self.strides, 'activation':self.activation, 'padding': self.padding})
+        'kernel_size': self.kernel_size, 'strides': self.strides, 'activation':self.activation, 'padding': self.padding, 'filters':self.expand1x1_filters+self.expand3x3_filters})
         return config
 
     def call(self, inputs):

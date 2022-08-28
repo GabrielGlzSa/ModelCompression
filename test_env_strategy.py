@@ -110,7 +110,7 @@ test_ds = test_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.A
 
 
 input_shape = (224,224,3)
-env = make_env_imagenet(create_model, train_ds, valid_ds, test_ds, input_shape, layer_name_list, n_samples_mode, tuning_batch_size, current_state, next_state, strategy)
+env = make_env_imagenet(create_model, train_ds, valid_ds, test_ds, input_shape, layer_name_list, n_samples_mode, tuning_batch_size, current_state, next_state, strategy, data_path)
 env.model.summary()
 
 conv_shape, dense_shape = env.observation_space()

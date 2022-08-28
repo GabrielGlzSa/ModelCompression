@@ -179,9 +179,8 @@ class ReplaceDenseWithGlobalAvgPool(ModelCompression):
     def get_new_layer(self, old_layer):
         self.logger.debug('Searching for all dense layers.')
         flatten_idx = self.find_layer('flatten')
-        last_conv = flatten_idx - 2
-
-        filters = self.model.layers[last_conv].get_config()['filters']
+        conv_layer_config = self.model.layers[flatten_idx - 2].get_config()
+        filters = conv_layer_config['filters']
         removed_weights = 0
         removed_layers = self.model.layers[flatten_idx+1:-1]
         # Calculate the number of weights that were removed for the hidden dense layers.

@@ -12,7 +12,7 @@ import logging
 class ModelCompressionEnv():
     def __init__(self, compressors_list, create_model_func, compr_params,
                  train_ds, validation_ds, test_ds,
-                 layer_name_list, input_shape, current_state_source='layer_input', next_state_source='layer_output', verbose=0, get_state_from='validation', tuning_epochs=20, num_feature_maps=128, tuning_batch_size=32, strategy=None):
+                 layer_name_list, input_shape, current_state_source='layer_input', next_state_source='layer_output', verbose=0, get_state_from='validation', tuning_epochs=20, num_feature_maps=128, tuning_batch_size=32, strategy=None, model_path='./data'):
 
         self._episode_ended = False
         self.verbose = verbose
@@ -34,7 +34,7 @@ class ModelCompressionEnv():
         self.strategy = strategy
         self.callbacks = []
 
-        self.save_model_path = '/mnt/disks/mcdata/data'
+        self.model_path = model_path+'/temp_model'
 
         self.model = self.create_model_func()
         self.optimizer = tf.keras.optimizers.Adam(1e-5)
@@ -142,7 +142,11 @@ class ModelCompressionEnv():
         self.logger.debug('Finished creating model to extract feature map.')
         num_batches = self.num_feature_maps//self.tuning_batch_size
 
+        if self.strategy:
+            num_batches = 1
+            
         self.logger.debug(f'For {self.num_feature_maps} samples, {num_batches} samples of {self.tuning_batch_size} are required.')
+
         if self.get_state_from == 'train':
             random_imgs = self.train_ds.take(num_batches)
         elif self.get_state_from == 'validation':
@@ -308,9 +312,9 @@ class ModelCompressionEnv():
 
                 if self.strategy:
                     self.logger.debug('Strategy found. Using strategy to fit model.')
-                    self.model.save(self.save_model_path)
+                    self.model.save(self.model_path)
                     with self.strategy.scope():
-                        self.model = tf.keras.models.load_model(self.save_model_path)
+                        self.model = tf.keras.models.load_model(self.model_path)
                         # Train only the modified layers.
                         for layer in self.model.layers:
                             if layer.name in self.layer_name_list:
