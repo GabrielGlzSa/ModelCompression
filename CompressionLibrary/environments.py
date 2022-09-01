@@ -12,7 +12,7 @@ import logging
 class ModelCompressionEnv():
     def __init__(self, compressors_list, create_model_func, compr_params,
                  train_ds, validation_ds, test_ds,
-                 layer_name_list, input_shape, current_state_source='layer_input', next_state_source='layer_output', verbose=0, get_state_from='validation', tuning_epochs=20, num_feature_maps=128, tuning_batch_size=32, strategy=None, model_path='./data'):
+                 layer_name_list, input_shape, current_state_source='layer_input', next_state_source='layer_output', verbose=0, get_state_from='validation', tuning_epochs=10, num_feature_maps=128, tuning_batch_size=32, strategy=None, model_path='./data'):
 
         self._episode_ended = False
         self.verbose = verbose
@@ -61,6 +61,8 @@ class ModelCompressionEnv():
                 self.dense_compressors.append(compressor)
             del temp_comp
 
+
+        self.conv_compressors.remove('SparseConvolutionCompression')
         self._layer_counter = 0
 
         max_filters = self.get_highest_num_filters()
@@ -302,21 +304,23 @@ class ModelCompressionEnv():
 
                 if self.strategy:
                     self.logger.debug('Strategy found. Using strategy to fit model.')
+                    # Train only the modified layers.
+                    for layer in self.model.layers:
+                        if layer.name in self.layer_name_list:
+                            layer.trainable = True
+                        else:
+                            layer.trainable = False
                     self.model.save(self.model_path)
+                    
                     with self.strategy.scope():
                         self.model = tf.keras.models.load_model(self.model_path)
-                        # Train only the modified layers.
-                        for layer in self.model.layers:
-                            if layer.name in self.layer_name_list:
-                                layer.trainable = True
-                            else:
-                                layer.trainable = False
+                        
                         self.model.summary()
                         self.model.fit(self.train_ds, epochs=self.tuning_epochs, callbacks=self.callbacks, validation_data=self.validation_ds)
 
-                        # Set all layers back to trainable.
-                        for layer in self.model.layers:
-                            layer.trainable = True
+                    # Set all layers back to trainable.
+                    for layer in self.model.layers:
+                        layer.trainable = True
 
                 else:
 
@@ -345,6 +349,11 @@ class ModelCompressionEnv():
         info['val_acc_after'] = val_acc_after
         info['actions'] = self.chosen_actions
         info['reward'] = reward
+
+        self.model.save(self.model_path)
+                    
+        with self.strategy.scope():
+            self.model = tf.keras.models.load_model(self.model_path)
 
         
 

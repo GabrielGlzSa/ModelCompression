@@ -107,11 +107,10 @@ class ConvSVD(tf.keras.layers.Layer):
 @tf.keras.utils.register_keras_serializable()
 class FireLayer(tf.keras.layers.Layer):
 
-    def __init__(self, squeeze_filters, expand1x1_filters, expand3x3_filters, kernel_size=(3,3), strides=1, activation='relu', padding='same',**kwargs):
+    def __init__(self, squeeze_filters, filters, kernel_size=(3,3), strides=1, activation='relu', padding='same',**kwargs):
         (super(FireLayer, self).__init__)(**kwargs)
+        self.filters = filters 
         self.squeeze_filters = squeeze_filters
-        self.expand1x1_filters = expand1x1_filters
-        self.expand3x3_filters = expand3x3_filters
         if isinstance(strides, int):
             self.strides = (strides, strides)
         else:
@@ -122,7 +121,6 @@ class FireLayer(tf.keras.layers.Layer):
         self.kernel_size = kernel_size
         self.padding = padding.upper()
         self.activation = tf.keras.activations.get(activation)
-        self.filters = expand1x1_filters+expand3x3_filters
 
     def build(self, input_shape):
         _, _, _, channels = input_shape
@@ -130,14 +128,13 @@ class FireLayer(tf.keras.layers.Layer):
         zeros_init = tf.zeros_initializer()
 
         self.kernel_squeeze = tf.Variable(name='kernel_squeeze', initial_value=w_init(shape=(1,1, channels, self.squeeze_filters) , dtype='float32'))
-        self.kernel_expand1x1 = tf.Variable(name='kernel_squeeze', initial_value=w_init(shape=(1,1, self.squeeze_filters, self.expand1x1_filters) , dtype='float32'))
-        self.kernel_expand3x3 = tf.Variable(name='kernel_squeeze', initial_value=w_init(shape=(self.kernel_size[0],self.kernel_size[1], self.squeeze_filters, self.expand3x3_filters) , dtype='float32'))
-        self.bias = tf.Variable(name='bias', initial_value=zeros_init(shape=self.expand3x3_filters+self.expand1x1_filters ,dtype='float32'), trainable=True)
+        self.kernel_expand1x1 = tf.Variable(name='kernel_squeeze', initial_value=w_init(shape=(1,1, self.squeeze_filters, self.filters//2) , dtype='float32'))
+        self.kernel_expand3x3 = tf.Variable(name='kernel_squeeze', initial_value=w_init(shape=(self.kernel_size[0],self.kernel_size[1], self.squeeze_filters, self.filters//2) , dtype='float32'))
+        self.bias = tf.Variable(name='bias', initial_value=zeros_init(shape=self.filters ,dtype='float32'), trainable=True)
 
     def get_config(self):
         config = super(FireLayer, self).get_config().copy()
-        config.update({'squeeze_filters': self.squeeze_filters, 'expand1x1_filters': self.expand1x1_filters, 'expand3x3_filters': self.expand3x3_filters, 
-        'kernel_size': self.kernel_size, 'strides': self.strides, 'activation':self.activation, 'padding': self.padding, 'filters': self.filters})
+        config.update({'squeeze_filters': self.squeeze_filters, 'kernel_size': self.kernel_size, 'strides': self.strides, 'activation':self.activation, 'padding': self.padding, 'filters': self.filters})
         return config
 
     def call(self, inputs):

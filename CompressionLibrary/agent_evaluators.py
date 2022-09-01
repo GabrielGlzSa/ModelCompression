@@ -4,7 +4,7 @@ from CompressionLibrary.environments import ModelCompressionEnv
 import pandas as pd
 import numpy as np
 import gc
-import time
+from datetime import datetime
 import logging
 
 def make_env_imagenet(create_model, train_ds, valid_ds, test_ds, input_shape, layer_name_list, num_feature_maps, tuning_batch_size, current_state_source='layer_input', next_state_source='layer_output', strategy=None, model_path='./data'):
@@ -63,6 +63,7 @@ def play_and_record(conv_agent, fc_agent, env, conv_replay, fc_replay, n_steps=1
     data = []
     rewards = []
     for it in range(n_steps):
+        start = datetime.now()
         for k in range(1, len(env.layer_name_list)+1):
             tf.keras.backend.clear_session()
             # Get the current layer name
@@ -105,7 +106,9 @@ def play_and_record(conv_agent, fc_agent, env, conv_replay, fc_replay, n_steps=1
 
         # Correct reward is the last value of r.
         rewards.append(r)
-
+        end = datetime.now()
+        time_diff = (end - start).total_seconds()
+        logger.info(f'Took {time_diff} seconds for one compression.')
         for row in data:
             if row['was_conv']:
                 for idx, state in enumerate(row['state']):
@@ -131,7 +134,7 @@ def evaluate_agents(env, conv_agent, fc_agent, save_name, n_games=2):
         tf.keras.backend.clear_session()
         s = env.reset()
         info = None
-        start = time.time()
+        start = datetime.now()
         for k in range(1,len(env.layer_name_list)+1):
             next_layer_name = env.layer_name_list[env._layer_counter]
             layer = env.model.get_layer(next_layer_name)
@@ -150,7 +153,7 @@ def evaluate_agents(env, conv_agent, fc_agent, save_name, n_games=2):
             if done:
                 s = env.reset()
                 break
-        game_time = start - time.time()
+        game_time = (datetime.now() - start).total_seconds()
         actions = info['actions']
         logger.info(f'Actions taken in game {game_id} were  {actions} for a reward of {r}. Took {game_time} seconds.')
         total_time += game_time

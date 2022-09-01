@@ -33,8 +33,8 @@ current_state = 'layer_input'
 next_state = 'layer_output'
 
 eval_n_samples = 10
-n_samples_mode = 64
-batch_size_per_replica = 64
+n_samples_mode = 128
+batch_size_per_replica = 128
 tuning_batch_size = batch_size_per_replica * strategy.num_replicas_in_sync
 
 
@@ -101,8 +101,6 @@ def create_model():
     model.compile(optimizer=optimizer, loss=loss_object,
                     metrics=train_metric)
 
-    model.summary()     
-
     return model       
 
 train_ds = train_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).shuffle(buffer_size=2048, reshuffle_each_iteration=True).batch(tuning_batch_size).prefetch(tf.data.AUTOTUNE)
@@ -122,6 +120,6 @@ print(conv_shape, dense_shape)
 random_conv = RandomAgent('random_conv', conv_n_actions)
 random_fc = RandomAgent('random_fc', fc_n_actions)
 
-results = evaluate_agents(env, random_conv,random_fc, save_name='./data/test_evaluate.csv')
+results = evaluate_agents(env, random_conv,random_fc, save_name='./data/test_evaluate.csv', n_games=5)
 
 print(results)

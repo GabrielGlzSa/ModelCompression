@@ -7,7 +7,7 @@
 # Size of source mod 2**32: 57841 bytes
 
 import math, tensorflow as tf, tensorflow.keras.backend as K, numpy as np, logging
-import time
+from datetime import datetime
 from CompressionLibrary.custom_callbacks import AddSparseConnectionsCallback
 from CompressionLibrary.custom_constraints import kNonZeroes, SparseWeights
 from CompressionLibrary.custom_layers import DenseSVD, SparseSVD, FireLayer, MLPConv, ConvSVD, SparseConvolution2D, SparseConnectionsConv2D
@@ -272,7 +272,7 @@ class InsertDenseSparse(ModelCompression):
           constraint=(kNonZeroes(k_basis_vectors)),
           dtype='float32')
 
-        start_time = time.time()
+        start_time = datetime.now()
         optimizer = tf.keras.optimizers.Adam() 
         for i in range(self.new_layer_iterations):
             with tf.GradientTape() as (tape):
@@ -283,7 +283,7 @@ class InsertDenseSparse(ModelCompression):
             if self.new_layer_verbose and i%100==0:
                 self.logger.info('Epoch {} has a loss of {}'.format(i, loss))
         
-        training_time = time.time() - start_time
+        training_time = (datetime.now() - start_time).total_seconds()
 
         pred = tf.matmul(basis, sparse_dict)
         loss = tf.reduce_mean(tf.square(weights - pred))
@@ -375,9 +375,9 @@ class FireLayerCompression(ModelCompression):
         padding = config['padding']
 
         squeeze_filters = (filters // 4)
-        expand1x1_filters = (filters // 2)
-        expand3x3_filters = (filters // 2)
-        new_layer = FireLayer(squeeze_filters=squeeze_filters, expand1x1_filters=expand1x1_filters, expand3x3_filters=expand3x3_filters, kernel_size=kernel_size, activation=activation,
+        # expand1x1_filters = (filters // 2)
+        # expand3x3_filters = (filters // 2)
+        new_layer = FireLayer(squeeze_filters=squeeze_filters, filters=filters, kernel_size=kernel_size, activation=activation,
                   padding=padding,
                   strides=strides,
                   name=old_layer.name + '/FireLayer')
@@ -531,7 +531,7 @@ class SparseConvolutionCompression(ModelCompression):
         self.logger.debug('Searching for matrix P.')
 
         optimizer = tf.keras.optimizers.Adam()
-        start_time = time.time()
+        start_time = datetime.now()
         for i in range(self.new_layer_iterations):
             with tf.GradientTape() as tape:
                 tape.watch([R,P])
@@ -542,7 +542,7 @@ class SparseConvolutionCompression(ModelCompression):
             if self.new_layer_verbose and i % 100 == 0:
                 self.logger.info('Epoch {} of RxP Loss: {}'.format(i, loss))
 
-        training_time = time.time() - start_time
+        training_time = (datetime.now() - start_time).total_seconds()
         self.logger.info('Took {} secs for {} iterations and {} MSE.'.format(training_time, self.new_layer_iterations, loss))
 
 
@@ -562,7 +562,7 @@ class SparseConvolutionCompression(ModelCompression):
         optimizer = tf.keras.optimizers.Adam(1e-5)
 
         expected_value = tf.constant(R)
-        start_time = time.time()
+        start_time = datetime.now()
         for i in range(self.new_layer_iterations_sparse):
             with tf.GradientTape() as tape:
                 tape.watch([S,Q])
@@ -573,7 +573,7 @@ class SparseConvolutionCompression(ModelCompression):
             if self.new_layer_verbose and i % 1000 == 0:
                 self.logger.debug(f'Epoch {i} Loss: {loss}')
 
-        training_time = time.time() - start_time
+        training_time = (datetime.now() - start_time).total_seconds()
         self.logger.info('Took {} secs for {} iterations and {} MSE.'.format(training_time, self.new_layer_iterations_sparse, loss))
 
         self.logger.debug(f'Matrix P has shape {P.shape}')
@@ -585,7 +585,8 @@ class SparseConvolutionCompression(ModelCompression):
         config = old_layer.get_config()
         kernel, bias = old_layer.get_weights()
         _, _, channels, filters = kernel.shape
-        self.bases = max(channels // 8, 4)
+        self.bases = (9*channels*filters-channels**2)//(9*channels+channels*filters)
+
         self.logger.debug(f'Using {self.bases} bases for {channels} input channels.')
         activation = config['activation']
         kernel_size =config['kernel_size']
