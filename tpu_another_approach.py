@@ -27,12 +27,7 @@ logging.root.setLevel(logging.DEBUG)
 batch_size_per_replica = 128
 tuning_batch_size = batch_size_per_replica * strategy.num_replicas_in_sync
 
-def create_model():
-    optimizer = tf.keras.optimizers.Adam(1e-5)
-    loss_object = tf.keras.losses.SparseCategoricalCrossentropy()
-    train_metric = tf.keras.metrics.SparseCategoricalAccuracy()
-
-
+def create_model(optimizer, loss, metric):
     model = tf.keras.applications.vgg16.VGG16(
                             include_top=True,
                             weights='imagenet',
@@ -40,8 +35,8 @@ def create_model():
                             classes=1000,
                             classifier_activation='softmax'
                         )
-    model.compile(optimizer=optimizer, loss=loss_object,
-                    metrics=train_metric)
+    model.compile(optimizer=optimizer, loss=loss,
+                    metrics=metric)
 
     return model       
 
@@ -86,15 +81,17 @@ with strategy.scope():
     optimizer = tf.keras.optimizers.Adam()
     loss = tf.keras.losses.SparseCategoricalCrossentropy()
     metric = tf.keras.metrics.SparseCategoricalAccuracy()
-    model = create_model()
-    model.compile(optimizer, loss, metric)
+    model = create_model(optimizer, loss, metric)
     for layer_name in target_layers:
         compressor = MLPCompression(model=model, dataset=train_ds, optimizer=optimizer, loss=loss, metrics=metric, input_shape=input_shape)
-        model = compressor.compress_layer(layer_name)
+        compressor.compress_layer(layer_name)
         new_layer, new_layer_name, weights_before, weights_after = compressor.get_new_layer(model.get_layer(layer_name))
         new_layers.append(new_layer)
         model = compressor.replace_layer(new_layer, layer_name)
         model.compile(optimizer, loss, metric)
 
-    model2 = clone_model(model, input_shape, new_layers, target_layers, optimizer, loss, metric)
+    optimizer2 = tf.keras.optimizers.Adam()
+    loss2 = tf.keras.losses.SparseCategoricalCrossentropy()
+    metric2 = tf.keras.metrics.SparseCategoricalAccuracy()
+    model2 = clone_model(model, input_shape, new_layers, target_layers, optimizer2, loss2, metric2)
     model2.fit(train_ds, epochs=10, validation_data=valid_ds)
