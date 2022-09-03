@@ -93,8 +93,10 @@ class ModelCompressionEnv():
 
             self.logger.debug('Evaluating model using test set.')
             test_loss, self.test_acc_before = self.model.evaluate(self.test_ds, verbose=self.verbose)
+            self.logger.info(f'Test accuracy is {self.test_acc_before} and loss {test_loss}')
             self.logger.debug('Evaluating model using validation set.')
             val_loss, self.val_acc_before = self.model.evaluate(self.validation_ds, verbose=self.verbose)
+            self.logger.info(f'Test accuracy is {self.val_acc_before} and loss {val_loss}')
 
         self.logger.info('Finished environment initialization.')
 

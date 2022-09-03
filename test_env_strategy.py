@@ -1,10 +1,9 @@
 import tensorflow as tf
 import logging
-import tensorflow_datasets as tfds
 
 from CompressionLibrary.agent_evaluators import make_env_imagenet, evaluate_agents, play_and_record
-from CompressionLibrary.environments import *
 from CompressionLibrary.reinforcement_models import RandomAgent
+from CompressionLibrary.utils import load_dataset
 
 try:
   # Use below for TPU
@@ -45,46 +44,6 @@ layer_name_list = [ 'block2_conv1', 'block2_conv2',
                     'fc1', 'fc2']
 
 
-
-def resize_image(image, shape = (224,224)):
-  target_width = shape[0]
-  target_height = shape[1]
-  initial_width = tf.shape(image)[0]
-  initial_height = tf.shape(image)[1]
-  im = image
-  ratio = 0
-  if(initial_width < initial_height):
-    ratio = tf.cast(256 / initial_width, tf.float32)
-    h = tf.cast(initial_height, tf.float32) * ratio
-    im = tf.image.resize(im, (256, h), method="bicubic")
-  else:
-    ratio = tf.cast(256 / initial_height, tf.float32)
-    w = tf.cast(initial_width, tf.float32) * ratio
-    im = tf.image.resize(im, (w, 256), method="bicubic")
-  width = tf.shape(im)[0]
-  height = tf.shape(im)[1]
-  startx = width//2 - (target_width//2)
-  starty = height//2 - (target_height//2)
-  im = tf.image.crop_to_bounding_box(im, startx, starty, target_width, target_height)
-  return im
-
-@tf.function
-def imagenet_preprocessing(img, label):
-    img = tf.cast(img, tf.float32)
-    img = resize_image(img)
-    img = tf.keras.applications.vgg16.preprocess_input(img, data_format=None)
-    return img, label
-
-splits, info = tfds.load('imagenet2012', as_supervised=True, with_info=True, shuffle_files=True, 
-                            split=['train[:80%]', 'train[80%:]', 'test'], data_dir=data_path)
-
-(train_examples, validation_examples, test_examples) = splits
-num_examples = info.splits['train'].num_examples
-
-num_classes = info.features['label'].num_classes
-input_shape = info.features['image'].shape
-
-
 def create_model():
     optimizer = tf.keras.optimizers.Adam(1e-5)
     loss_object = tf.keras.losses.SparseCategoricalCrossentropy()
@@ -95,7 +54,7 @@ def create_model():
                             include_top=True,
                             weights='imagenet',
                             input_shape=(224,224,3),
-                            classes=num_classes,
+                            classes=1000,
                             classifier_activation='softmax'
                         )
     model.compile(optimizer=optimizer, loss=loss_object,
@@ -103,9 +62,7 @@ def create_model():
 
     return model       
 
-train_ds = train_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).shuffle(buffer_size=2048, reshuffle_each_iteration=True).batch(tuning_batch_size).prefetch(tf.data.AUTOTUNE)
-valid_ds = validation_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(tuning_batch_size).prefetch(tf.data.AUTOTUNE)
-test_ds = test_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(tuning_batch_size).prefetch(tf.data.AUTOTUNE)
+train_ds, valid_ds, test_ds, input_shape, _ = load_dataset()
 
 
 input_shape = (224,224,3)
@@ -120,6 +77,6 @@ print(conv_shape, dense_shape)
 random_conv = RandomAgent('random_conv', conv_n_actions)
 random_fc = RandomAgent('random_fc', fc_n_actions)
 
-results = evaluate_agents(env, random_conv,random_fc, save_name='./data/test_evaluate.csv', n_games=5)
+results = evaluate_agents(env, random_conv,random_fc, save_name=data_path+'/data/test_evaluate.csv', n_games=1)
 
 print(results)
