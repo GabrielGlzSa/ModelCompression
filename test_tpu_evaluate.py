@@ -46,25 +46,26 @@ def imagenet_preprocessing(img, label):
     img = tf.keras.applications.vgg16.preprocess_input(img, data_format=None)
     return img, label
 
-splits, info = tfds.load('imagenet2012', as_supervised=True, with_info=True, shuffle_files=True, 
-                            split=['train[:80%]', 'train[80%:]','validation'], data_dir=data_path)
+def create_dataset(batch_size=128):
+  splits, info = tfds.load('imagenet2012', as_supervised=True, with_info=True, shuffle_files=True, 
+                              split=['train[:80%]', 'train[80%:]','validation'], data_dir=data_path)
 
-(train_examples, validation_examples, test_examples) = splits
-num_examples = info.splits['train'].num_examples
+  (train_examples, validation_examples, test_examples) = splits
+  num_examples = info.splits['train'].num_examples
 
-num_classes = info.features['label'].num_classes
-input_shape = info.features['image'].shape
+  num_classes = info.features['label'].num_classes
+  input_shape = info.features['image'].shape
 
-input_shape = (224,224,3)
-batch_size = 32
+  input_shape = (224,224,3)
 
-train_ds = train_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).shuffle(buffer_size=1000, reshuffle_each_iteration=True).batch(batch_size).prefetch(tf.data.AUTOTUNE)
-valid_ds = validation_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(batch_size).prefetch(tf.data.AUTOTUNE)
-test_ds = test_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+  train_ds = train_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).shuffle(buffer_size=1000, reshuffle_each_iteration=True).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+  valid_ds = validation_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+  test_ds = test_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+
+  return train_ds, valid_ds, test_ds, input_shape, input_shape, num_classes
 
 
-
-def create_model():
+def create_model(num_classes):
   optimizer = tf.keras.optimizers.Adam(1e-5)
   loss_object = tf.keras.losses.SparseCategoricalCrossentropy()
   train_metric = tf.keras.metrics.SparseCategoricalAccuracy()
@@ -84,8 +85,9 @@ def create_model():
 
 
 with strategy.scope():
-    model = create_model()
-    loss, acc_before = model.evaluate(valid_ds)
-
-
-print(f'Validation accuracy of {acc_before} and {loss} loss.')
+  train_ds, valid_ds, test_ds, input_shape, num_classes = create_dataset(batch_size=32*8)
+  model = create_model()
+  loss, acc_before = model.evaluate(valid_ds)
+  print(f'Validation accuracy of {acc_before} and {loss} loss.')
+  loss, acc_before = model.evaluate(test_ds)
+  print(f'Test accuracy of {acc_before} and {loss} loss.')
