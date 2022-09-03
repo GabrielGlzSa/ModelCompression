@@ -47,7 +47,7 @@ def imagenet_preprocessing(img, label):
     return img, label
 
 splits, info = tfds.load('imagenet2012', as_supervised=True, with_info=True, shuffle_files=True, 
-                            split=['train´[:80%]', 'train´[80%:]','validation'], data_dir=data_path)
+                            split=['train[:80%]', 'train[80%:]','validation'], data_dir=data_path)
 
 (train_examples, validation_examples, test_examples) = splits
 num_examples = info.splits['train'].num_examples
