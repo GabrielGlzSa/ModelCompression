@@ -1,9 +1,7 @@
 import tensorflow as tf
 import logging
-
-from CompressionLibrary.agent_evaluators import make_env_imagenet, evaluate_agents, play_and_record
-from CompressionLibrary.reinforcement_models import RandomAgent
 from CompressionLibrary.utils import load_dataset
+from CompressionLibrary.CompressionTechniques import MLPCompression
 
 try:
   # Use below for TPU
@@ -23,26 +21,10 @@ except:
 
 print('Number of devices: {}'.format(strategy.num_replicas_in_sync))
 
-
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s -%(levelname)s - %(funcName)s -  %(message)s')
 logging.root.setLevel(logging.DEBUG)
-
-dataset = 'imagenet2012'
-current_state = 'layer_input'
-next_state = 'layer_output'
-
-eval_n_samples = 10
-n_samples_mode = 128
 batch_size_per_replica = 128
 tuning_batch_size = batch_size_per_replica * strategy.num_replicas_in_sync
-
-
-layer_name_list = [ 'block2_conv1', 'block2_conv2', 
-                    'block3_conv1', 'block3_conv2', 'block3_conv3',
-                    'block4_conv1', 'block4_conv2', 'block4_conv3',
-                    'block5_conv1', 'block5_conv2', 'block5_conv3',
-                    'fc1', 'fc2']
-
 
 def create_model():
     optimizer = tf.keras.optimizers.Adam(1e-5)
@@ -62,21 +44,20 @@ def create_model():
 
     return model       
 
-train_ds, valid_ds, test_ds, input_shape, _ = load_dataset(data_path)
+target_layers = ['block2_conv1', 'block2_conv2']
 
+with strategy.scope():
+    train_ds, valid_ds, input_shape, batch_size = load_dataset()
+    optimizer = tf.keras.optimizers.Adam()
+    loss = tf.keras.losses.SparseCategoricalCrossentropy()
+    metric = tf.keras.metrics.SparseCategoricalAccuracy()
+    model = create_model()
+    model.compile(optimizer, loss, metric)
+    for layer_name in target_layers:
+        compressor = MLPCompression(model=model, dataset=train_ds, optimizer=optimizer, loss=loss, metrics=metric, input_shape=input_shape)
 
-input_shape = (224,224,3)
-env = make_env_imagenet(create_model, train_ds, valid_ds, test_ds, input_shape, layer_name_list, n_samples_mode, tuning_batch_size, current_state, next_state, strategy, data_path)
-env.model.summary()
+        new_layer, new_layer_name, weights_before, weights_after = compressor.get_new_layer(model.get_layer(layer_name))
 
-conv_shape, dense_shape = env.observation_space()
-conv_n_actions, fc_n_actions = env.action_space()
-
-print(conv_shape, dense_shape)
-
-random_conv = RandomAgent('random_conv', conv_n_actions)
-random_fc = RandomAgent('random_fc', fc_n_actions)
-
-results = evaluate_agents(env, random_conv,random_fc, save_name=data_path+'/data/test_evaluate.csv', n_games=1)
-
-print(results)
+        model = compressor.replace_layer(new_layer, layer_name)
+        model.compile(optimizer, loss, metric)
+    model.fit(train_ds, epochs=10, validation_data=valid_ds)
