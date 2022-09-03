@@ -272,22 +272,27 @@ class InsertDenseSparse(ModelCompression):
           constraint=(kNonZeroes(k_basis_vectors)),
           dtype='float32')
 
-        start_time = datetime.now()
-        optimizer = tf.keras.optimizers.Adam() 
-        for i in range(self.new_layer_iterations):
+
+        @tf.function
+        def train_step_sparse(basis, sparse_dict, weights):
             with tf.GradientTape() as (tape):
                 pred = tf.matmul(basis, sparse_dict)
                 loss = tf.reduce_mean(tf.square(weights - pred)) 
             gradients = tape.gradient(loss, [basis, sparse_dict])
             optimizer.apply_gradients(zip(gradients, [basis, sparse_dict]))
+            return loss
+
+        start_time = datetime.now()
+        optimizer = tf.keras.optimizers.Adam() 
+        for i in range(self.new_layer_iterations):
+            loss = train_step_sparse(basis, sparse_dict, weights)
             if self.new_layer_verbose and i%100==0:
-                self.logger.info('Epoch {} has a loss of {}'.format(i, loss))
+                self.logger.info(f'Epoch {i} of RxP Loss: {loss}')
         
         training_time = (datetime.now() - start_time).total_seconds()
-
         pred = tf.matmul(basis, sparse_dict)
         loss = tf.reduce_mean(tf.square(weights - pred))
-        self.logger.info('Took {} secs for {} iterations and {} MSE.'.format(training_time, self.new_layer_iterations, loss))
+        self.logger.info(f'Took {training_time} secs for {self.new_layer_iterations} iterations and {loss} MSE.')
 
         new_layer = SparseSVD(units=units, basis_vectors=basis_vectors, k_basis_vectors=k_basis_vectors, activation=activation,
                   name=old_layer.name + '/SparseSVD')
@@ -530,20 +535,26 @@ class SparseConvolutionCompression(ModelCompression):
             trainable=True)
         self.logger.debug('Searching for matrix P.')
 
-        optimizer = tf.keras.optimizers.Adam()
-        start_time = datetime.now()
-        for i in range(self.new_layer_iterations):
+
+        @tf.function
+        def train_step_RP(R, P, weights):
             with tf.GradientTape() as tape:
                 tape.watch([R,P])
                 pred = tf.einsum('hwcf,cp->hwpf',R,P)
                 loss = tf.reduce_mean(tf.square(((weights - pred))))
             gradients = tape.gradient(loss, [R, P])
             optimizer.apply_gradients(zip(gradients, [R,P]))
+            return loss
+
+        optimizer = tf.keras.optimizers.Adam()
+        start_time = datetime.now()
+        for i in range(self.new_layer_iterations):
+            loss = train_step_RP(R, P, weights)
             if self.new_layer_verbose and i % 100 == 0:
-                self.logger.info('Epoch {} of RxP Loss: {}'.format(i, loss))
+                self.logger.info(f'Epoch {i} of RxP Loss: {loss}')
 
         training_time = (datetime.now() - start_time).total_seconds()
-        self.logger.info('Took {} secs for {} iterations and {} MSE.'.format(training_time, self.new_layer_iterations, loss))
+        self.logger.info(f'Took {training_time} secs for {self.new_layer_iterations} iterations and {loss} MSE.')
 
 
         self.logger.debug('Searching for matrices Q and S.')
@@ -559,22 +570,28 @@ class SparseConvolutionCompression(ModelCompression):
         for i in range(sh):
             Q[:, i, i, :].assign(tf.ones(shape=(channels, self.bases)))
 
-        optimizer = tf.keras.optimizers.Adam(1e-5)
 
-        expected_value = tf.constant(R)
-        start_time = datetime.now()
-        for i in range(self.new_layer_iterations_sparse):
+        @tf.function
+        def train_step_SQ(S, Q, expected_value):
             with tf.GradientTape() as tape:
                 tape.watch([S,Q])
                 SQ = tf.einsum('chwb,cbf->hwcf', Q, S)
                 loss = tf.reduce_mean(tf.square(expected_value - SQ)) + tf.reduce_mean(tf.square(S))
             gradients = tape.gradient(loss, [S, Q])
             optimizer.apply_gradients(zip(gradients, [S, Q]))
+            return loss
+
+        optimizer = tf.keras.optimizers.Adam(1e-5)
+
+        expected_value = tf.constant(R)
+        start_time = datetime.now()
+        for i in range(self.new_layer_iterations_sparse):
+            loss = train_step_SQ(S, Q, expected_value)
             if self.new_layer_verbose and i % 1000 == 0:
                 self.logger.debug(f'Epoch {i} Loss: {loss}')
 
         training_time = (datetime.now() - start_time).total_seconds()
-        self.logger.info('Took {} secs for {} iterations and {} MSE.'.format(training_time, self.new_layer_iterations_sparse, loss))
+        self.logger.info(f'Took {training_time} secs for {self.new_layer_iterations_sparse} iterations and {loss} MSE.')
 
         self.logger.debug(f'Matrix P has shape {P.shape}')
         self.logger.debug(f'Matrix Q has shape {Q.shape}')
