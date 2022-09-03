@@ -62,7 +62,7 @@ def create_dataset(batch_size=128):
   valid_ds = validation_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(batch_size).prefetch(tf.data.AUTOTUNE)
   test_ds = test_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
-  return train_ds, valid_ds, test_ds, input_shape, input_shape, num_classes
+  return train_ds, valid_ds, test_ds, input_shape, num_classes
 
 
 def create_model(num_classes):
