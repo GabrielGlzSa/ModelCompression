@@ -86,7 +86,7 @@ def create_model(num_classes):
 
 with strategy.scope():
   train_ds, valid_ds, test_ds, input_shape, num_classes = create_dataset(batch_size=32*8)
-  model = create_model()
+  model = create_model(num_classes)
   loss, acc_before = model.evaluate(valid_ds)
   print(f'Validation accuracy of {acc_before} and {loss} loss.')
   loss, acc_before = model.evaluate(test_ds)
