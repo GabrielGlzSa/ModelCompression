@@ -20,7 +20,7 @@ except:
 
 
 with strategy.scope():
-  train_ds, valid_ds, test_ds, input_shape, num_classes = create_dataset(batch_size=32*8)
+  train_ds, valid_ds, test_ds, input_shape, num_classes = load_dataset(batch_size=32*8)
   model = create_model(num_classes)
   loss, acc_before = model.evaluate(valid_ds)
   print(f'Validation accuracy of {acc_before} and {loss} loss.')
