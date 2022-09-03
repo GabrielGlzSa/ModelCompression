@@ -50,18 +50,18 @@ def clone_layer(layer, layer_input):
     new_layer.set_weights(layer.get_weights())
     return new_layer
 
-def clone_model(model, input_shape, new_layers, target_layers, optimizer, loss, metric):
+def clone_model(model_layers, input_shape, new_layers, target_layers, optimizer, loss, metric):
     assert len(new_layers) == len(target_layers)
     inputs = tf.keras.layers.Input(shape=input_shape)
-    if isinstance(model.layers[0], tf.keras.layers.InputLayer):
+    if isinstance(model_layers[0], tf.keras.layers.InputLayer):
         start = 1
     else:
         start = 0
 
-    new_layer = clone_layer(model.layers[start], inputs)
+    new_layer = clone_layer(model_layers[start], inputs)
     x = new_layer(inputs)
     
-    for layer in model.layers[start+1:]:
+    for layer in model_layers[start+1:]:
         if layer.name in target_layers:
             idx = target_layers.index(layer.name)
             new_layer = clone_layer(target_layers[idx], x)
@@ -70,9 +70,9 @@ def clone_model(model, input_shape, new_layers, target_layers, optimizer, loss, 
 
         x = new_layer(x)
         
-    model = tf.keras.Model(inputs, x)
-    model.compile(optimizer, loss, metric)
-    return model
+    new_model = tf.keras.Model(inputs, x)
+    new_model.compile(optimizer, loss, metric)
+    return new_model
 
 
 optimizer = tf.keras.optimizers.Adam()
@@ -89,10 +89,12 @@ for layer_name in target_layers:
     model = compressor.replace_layer(new_layer, layer_name)
     model.compile(optimizer, loss, metric)
 
+model_layers = model.layers
 with strategy.scope():
     train_ds, valid_ds, test_ds, input_shape, _ = load_dataset(data_path)
+
     optimizer2 = tf.keras.optimizers.Adam()
     loss2 = tf.keras.losses.SparseCategoricalCrossentropy()
     metric2 = tf.keras.metrics.SparseCategoricalAccuracy()
-    model2 = clone_model(model, input_shape, new_layers, target_layers, optimizer2, loss2, metric2)
+    model2 = clone_model(model_layers, input_shape, new_layers, target_layers, optimizer2, loss2, metric2)
     model2.fit(train_ds, epochs=10, validation_data=valid_ds)
