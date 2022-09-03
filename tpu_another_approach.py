@@ -1,8 +1,10 @@
+from distutils.command.config import config
 from hashlib import new
 import tensorflow as tf
 import logging
 from CompressionLibrary.utils import load_dataset
 from CompressionLibrary.CompressionTechniques import MLPCompression
+from CompressionLibrary.custom_layers import MLPConv
 
 try:
   # Use below for TPU
@@ -80,21 +82,57 @@ loss = tf.keras.losses.SparseCategoricalCrossentropy()
 metric = tf.keras.metrics.SparseCategoricalAccuracy()
 model = create_model(optimizer, loss, metric)
 
+def extract_model_parts(model):
+
+    layers = []
+    configs = []
+    weights = []
+    for layer in model.layers[1:]:
+        layers.append(type(layer))
+        configs.append(layer.get_config())
+        try:
+            weights.append(layer.get_weights())
+        except:
+            weights.append(None)
+            print('Layer  has no get_weights()')
+
+
+    return layers, configs, weights
+
+
+def create_model_from_parts(layers, configs, weights):
+
+    sequential = []
+    for idx, layer in enumerate(layers):
+        if idx==0:
+            sequential.append(layer(**configs[idx], input_shape=(224,224,3)))
+        else:
+            sequential.append(layer(**configs[idx]))
+
+    model = tf.keras.Sequential(sequential)
+    
+    for idx, layer in enumerate(model.layers):
+        layer.set_weights(weights[idx])
+    return model
+
+
 new_layers = []
 for layer_name in target_layers:
     compressor = MLPCompression(model=model, dataset=None, optimizer=optimizer, loss=loss, metrics=metric, input_shape=(224,224,3))
     compressor.compress_layer(layer_name)
-    new_layer, new_layer_name, weights_before, weights_after = compressor.get_new_layer(model.get_layer(layer_name))
-    new_layers.append(new_layer)
-    model = compressor.replace_layer(new_layer, layer_name)
-    model.compile(optimizer, loss, metric)
+    model = compressor.get_model()
 
-model_layers = model.layers
+
+
+
+    
+layers, configs, weights = extract_model_parts(model)
+
 with strategy.scope():
     train_ds, valid_ds, test_ds, input_shape, _ = load_dataset(data_path)
-
     optimizer2 = tf.keras.optimizers.Adam()
     loss2 = tf.keras.losses.SparseCategoricalCrossentropy()
     metric2 = tf.keras.metrics.SparseCategoricalAccuracy()
-    model2 = clone_model(model_layers, input_shape, new_layers, target_layers, optimizer2, loss2, metric2)
+    model2 = create_model_from_parts(layers, configs, weights)
+    model2.compile(optimizer2, loss2, metric2)
     model2.fit(train_ds, epochs=10, validation_data=valid_ds)
