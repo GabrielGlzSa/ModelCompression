@@ -75,21 +75,22 @@ def clone_model(model, input_shape, new_layers, target_layers, optimizer, loss, 
     return model
 
 
+optimizer = tf.keras.optimizers.Adam()
+loss = tf.keras.losses.SparseCategoricalCrossentropy()
+metric = tf.keras.metrics.SparseCategoricalAccuracy()
+model = create_model(optimizer, loss, metric)
+
 new_layers = []
+for layer_name in target_layers:
+    compressor = MLPCompression(model=model, dataset=None, optimizer=optimizer, loss=loss, metrics=metric, input_shape=(224,224,3))
+    compressor.compress_layer(layer_name)
+    new_layer, new_layer_name, weights_before, weights_after = compressor.get_new_layer(model.get_layer(layer_name))
+    new_layers.append(new_layer)
+    model = compressor.replace_layer(new_layer, layer_name)
+    model.compile(optimizer, loss, metric)
+
 with strategy.scope():
     train_ds, valid_ds, test_ds, input_shape, _ = load_dataset(data_path)
-    optimizer = tf.keras.optimizers.Adam()
-    loss = tf.keras.losses.SparseCategoricalCrossentropy()
-    metric = tf.keras.metrics.SparseCategoricalAccuracy()
-    model = create_model(optimizer, loss, metric)
-    for layer_name in target_layers:
-        compressor = MLPCompression(model=model, dataset=train_ds, optimizer=optimizer, loss=loss, metrics=metric, input_shape=input_shape)
-        compressor.compress_layer(layer_name)
-        new_layer, new_layer_name, weights_before, weights_after = compressor.get_new_layer(model.get_layer(layer_name))
-        new_layers.append(new_layer)
-        model = compressor.replace_layer(new_layer, layer_name)
-        model.compile(optimizer, loss, metric)
-
     optimizer2 = tf.keras.optimizers.Adam()
     loss2 = tf.keras.losses.SparseCategoricalCrossentropy()
     metric2 = tf.keras.metrics.SparseCategoricalAccuracy()
