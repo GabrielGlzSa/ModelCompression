@@ -34,13 +34,12 @@ class AddSparseConnectionsCallback(tf.keras.callbacks.Callback):
 
 class EarlyStoppingReward(tf.keras.callbacks.Callback):
 
-    def __init__(self, weights_before, acc_before, baseline_acc=0.3, min_delta=0, patience=5, verbose=0, restore_best_weights=True):
+    def __init__(self, weights_before, baseline_acc=0.3, min_delta=0, patience=5, verbose=0, restore_best_weights=True):
         """
         
         """
         self.patience = patience
         self.verbose = verbose
-        self.acc_before = acc_before
         self.weights_after = None
         self.weights_before = weights_before
         self.baseline_acc = baseline_acc

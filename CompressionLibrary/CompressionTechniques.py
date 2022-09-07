@@ -266,10 +266,10 @@ class InsertDenseSparse(ModelCompression):
         weights = tf.constant(weights, dtype='float32')
 
         w_init = tf.random_normal_initializer()
-        zeros_init = tf.zeros_initializer()
-        basis = tf.Variable(name='basis', initial_value=w_init(shape=(features, basis_vectors)))
-        sparse_dict = tf.Variable(name='sparse_code', initial_value=zeros_init(shape=(basis_vectors, units)),
-          constraint=(kNonZeroes(k_basis_vectors)),
+        # zeros_init = tf.zeros_initializer()
+        basis = tf.Variable(name='basis', initial_value=w_init(shape=(features, basis_vectors)), trainable=True, dtype='float32')
+        sparse_dict = tf.Variable(name='sparse_code', initial_value=w_init(shape=(basis_vectors, units)),
+          constraint=(kNonZeroes(k_basis_vectors)), trainable=True,
           dtype='float32')
 
 

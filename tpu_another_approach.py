@@ -55,10 +55,13 @@ with strategy.scope():
 
 weights_before = calculate_model_weights(model)
 
+optimizer = tf.keras.optimizers.Adam(1e-5)
+loss = tf.keras.losses.SparseCategoricalCrossentropy()
+metric = tf.keras.metrics.SparseCategoricalAccuracy()
 new_layers = []
 for layer_name in target_layers:
     compressor = InsertDenseSparse(model=model, dataset=None, optimizer=optimizer, loss=loss, metrics=metric, input_shape=(224,224,3))
-    compressor.compress_layer(layer_name, new_layer_iterations=2000, new_layer_verbose=True)
+    compressor.compress_layer(layer_name, new_layer_iterations=1200, new_layer_verbose=True)
     model = compressor.get_model()
     new_layers.append(compressor.new_layer_name)
 
@@ -79,5 +82,8 @@ with strategy.scope():
             layer.trainable = False
     model.summary()
     model2.summary()
-    cb = EarlyStoppingReward()
-    model2.fit(train_ds, epochs=10, validation_data=valid_ds, callbacks=[])
+    cb = EarlyStoppingReward(acc_before=valid_acc, weights_before=weights_before, verbose=1)
+    model2.fit(train_ds, epochs=10, validation_data=valid_ds, callbacks=[cb])
+    loss, acc = model2.evaluate(test_ds)
+    weights_after = calculate_model_weights(model2)
+    print(f'Model has {weights_after} weights and an accuracy of {acc}.')
