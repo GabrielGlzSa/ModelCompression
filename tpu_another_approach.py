@@ -82,7 +82,7 @@ with strategy.scope():
             layer.trainable = False
     model.summary()
     model2.summary()
-    cb = EarlyStoppingReward(acc_before=valid_acc, weights_before=weights_before, verbose=1)
+    cb = EarlyStoppingReward(weights_before=weights_before, verbose=1)
     model2.fit(train_ds, epochs=10, validation_data=valid_ds, callbacks=[cb])
     loss, acc = model2.evaluate(test_ds)
     weights_after = calculate_model_weights(model2)
