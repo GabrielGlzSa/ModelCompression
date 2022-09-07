@@ -34,7 +34,7 @@ class AddSparseConnectionsCallback(tf.keras.callbacks.Callback):
 
 class EarlyStoppingReward(tf.keras.callbacks.Callback):
 
-    def __init__(self, weights_before, baseline_acc=0.3, min_delta=0, patience=5, verbose=0, restore_best_weights=True):
+    def __init__(self, weights_before, baseline_acc=0.5, min_delta=0, patience=5, verbose=0, restore_best_weights=True):
         """
         
         """
@@ -65,7 +65,7 @@ class EarlyStoppingReward(tf.keras.callbacks.Callback):
             
 
     def on_epoch_end(self, epoch, logs=None):
-        current_acc, current_reward = self.get_monitor_value(logs)
+        current_acc, current_reward = self.get_monitor_values(logs)
 
         if self.restore_best_weights and self.best_weights is None:
             # Restore the weights after first epoch if no progress is ever made.
