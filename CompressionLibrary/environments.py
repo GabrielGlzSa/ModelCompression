@@ -6,7 +6,7 @@ import importlib
 import CompressionLibrary.CompressionTechniques as CompressionTechniques
 from CompressionLibrary.CompressionTechniques import *
 from CompressionLibrary.custom_callbacks import EarlyStoppingReward
-from CompressionLibrary.utils import calculate_model_weights
+from CompressionLibrary.utils import calculate_model_weights, extract_model_parts, create_model_from_parts
 import logging
 
 class ModelCompressionEnv():
@@ -319,19 +319,24 @@ class ModelCompressionEnv():
 
                 if self.strategy:
                     self.logger.debug('Strategy found. Using strategy to fit model.')
-                    # Train only the modified layers.
-                    for layer in self.model.layers:
-                        if layer.name in self.layer_name_list:
-                            layer.trainable = True
-                        else:
-                            layer.trainable = False
-                    self.model.save(self.model_path)
-                    
+
+                    # Extract core info of model to create another inside scope.
+                    layers, configs, weights = extract_model_parts(self.model)
+
                     with self.strategy.scope():
-                        self.model = tf.keras.models.load_model(self.model_path)
-                        
+                        optimizer2 = tf.keras.optimizers.Adam(1e-5)
+                        loss2 = tf.keras.losses.SparseCategoricalCrossentropy()
+                        metric2 = tf.keras.metrics.SparseCategoricalAccuracy()
+                        self.model = create_model_from_parts(layers, configs, weights, optimizer2, loss2, metric2)
+                        for layer in self.model.layers:
+                            if layer.name in self.layer_name_list:
+                                layer.trainable = True
+                            else:
+                                layer.trainable = False
                         self.model.summary()
                         self.model.fit(self.train_ds, epochs=self.tuning_epochs, callbacks=self.callbacks, validation_data=self.validation_ds)
+                        test_loss, test_acc_after = self.model.evaluate(self.test_ds, verbose=self.verbose)
+                        val_loss, val_acc_after = self.model.evaluate(self.validation_ds, verbose=self.verbose)
 
                     # Set all layers back to trainable.
                     for layer in self.model.layers:
@@ -352,8 +357,8 @@ class ModelCompressionEnv():
                     for layer in self.model.layers:
                         layer.trainable = True
 
-                test_loss, test_acc_after = self.model.evaluate(self.test_ds, verbose=self.verbose)
-                val_loss, val_acc_after = self.model.evaluate(self.validation_ds, verbose=self.verbose)
+                    test_loss, test_acc_after = self.model.evaluate(self.test_ds, verbose=self.verbose)
+                    val_loss, val_acc_after = self.model.evaluate(self.validation_ds, verbose=self.verbose)
 
         reward = weight_diff + test_acc_after
         info['test_acc_before'] = self.test_acc_before
@@ -364,12 +369,6 @@ class ModelCompressionEnv():
         info['val_acc_after'] = val_acc_after
         info['actions'] = self.chosen_actions
         info['reward'] = reward
-
-        self.model.save(self.model_path)
-                    
-        with self.strategy.scope():
-            self.model = tf.keras.models.load_model(self.model_path)
-
         
 
         return self._state, reward, self._episode_ended, info

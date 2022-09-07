@@ -34,17 +34,16 @@ class AddSparseConnectionsCallback(tf.keras.callbacks.Callback):
 
 class EarlyStoppingReward(tf.keras.callbacks.Callback):
 
-    def __init__(self, monitor='val_reward', min_delta=0, mode='max',patience=3, verbose=0, acc_before=None, weights_before=None, baseline=None, restore_best_weights=True):
+    def __init__(self, weights_before, acc_before, baseline_acc=0.3, min_delta=0, patience=5, verbose=0, restore_best_weights=True):
         """
         
         """
-        self.monitor = monitor
         self.patience = patience
         self.verbose = verbose
         self.acc_before = acc_before
         self.weights_after = None
         self.weights_before = weights_before
-        self.baseline = baseline
+        self.baseline_acc = baseline_acc
         self.min_delta = abs(min_delta)
         self.wait = 0
         self.stopped_epoch = 0
@@ -52,57 +51,35 @@ class EarlyStoppingReward(tf.keras.callbacks.Callback):
         self.best_weights = None
         self.logger = logging.getLogger(__name__)
         
-
-        if mode not in ['auto', 'min', 'max']:
-            logging.warning('EarlyStopping mode %s is unknown, '
-                            'fallback to auto mode.', mode)
-            mode = 'auto'
-        if mode == 'min':
-            self.monitor_op = np.less
-        elif mode == 'max':
-            self.monitor_op = np.greater
-        else:
-            if (self.monitor.endswith('acc') or self.monitor.endswith('accuracy') or
-                self.monitor.endswith('auc') or self.monitor.endswith('reward')):
-                self.monitor_op = np.greater
-            else:
-                self.monitor_op = np.less
-
-        if self.monitor_op == np.greater:
-            self.min_delta *= 1
-        else:
-            self.min_delta *= -1
+        self.monitor_op = np.greater
+        self.min_delta *= 1
+       
 
     def on_train_begin(self, logs=None):
         # Allow instances to be re-used
         self.wait = 0
         self.stopped_epoch = 0
-        self.best = np.Inf if self.monitor_op == np.less else -np.Inf
+        self.best_acc = -np.Inf
+        self.best_reward = -np.Inf
         self.best_weights = None
         self.best_epoch = 0
-        if self.weights_before is None:
-            self.weights_before = utils.calculate_model_weights(self.model)
-
-        if self.monitor == 'val_reward' and self.baseline is None:
-            self.baseline = self.acc_before
             
 
     def on_epoch_end(self, epoch, logs=None):
-        current = self.get_monitor_value(logs)
-        if current is None:
-            return
+        current_acc, current_reward = self.get_monitor_value(logs)
+
         if self.restore_best_weights and self.best_weights is None:
             # Restore the weights after first epoch if no progress is ever made.
             self.best_weights = self.model.get_weights()
 
         self.wait += 1
-        if self._is_improvement(current, self.best):
-            self.best = current
+        if self._is_improvement(current_acc, self.best_acc):
+            self.best_acc = current_acc
             self.best_epoch = epoch
             if self.restore_best_weights:
                 self.best_weights = self.model.get_weights()
             # Only restart wait if we beat both the baseline and our previous best.
-            if self.baseline is None or self._is_improvement(current, self.baseline):
+            if self._is_improvement(current_acc, self.baseline_acc):
                 self.wait = 0
 
         # Only check after the first epoch.
@@ -118,29 +95,19 @@ class EarlyStoppingReward(tf.keras.callbacks.Callback):
     def on_train_end(self, logs=None):
         if self.stopped_epoch > 0 and self.verbose > 0:
             self.logger.info(
-                f'Epoch {self.stopped_epoch + 1}: early stopping with {self.best} {self.monitor}')
+                f'Epoch {self.stopped_epoch + 1}: early stopping with {self.best} {self.monitor}.')
 
-    def get_model_reward(self, logs):
+
+    def get_monitor_values(self, logs):
+        logs = logs or {}
         self.logger.debug(f'Old model had {self.weights_before} weights.')
         acc_after = logs.get('val_sparse_categorical_accuracy')
         weights_after = utils.calculate_model_weights(self.model)
         self.logger.debug(f'Model has {acc_after} accuracy, {weights_after} weights.')
         reward = 1 - (weights_after / self.weights_before) + acc_after
         self.logger.debug(f'Reward is {reward}.')
-        
-        return reward
 
-    def get_monitor_value(self, logs):
-        logs = logs or {}
-        if self.monitor == 'val_reward':
-            monitor_value = self.get_model_reward(logs)
-        else:
-            monitor_value = logs.get(self.monitor)
-        if monitor_value is None:
-            self.logger.warning('Early stopping conditioned on metric `%s` '
-                            'which is not available. Available metrics are: %s',
-                            self.monitor, ','.join(list(logs.keys())))
-        return monitor_value
+        return acc_after, reward
 
     def _is_improvement(self, monitor_value, reference_value):
         return self.monitor_op(monitor_value - self.min_delta, reference_value)

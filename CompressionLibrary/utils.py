@@ -5,7 +5,6 @@ import numpy as np
 import pandas as pd
 from CompressionLibrary.custom_layers import SparseSVD, SparseConnectionsConv2D, SparseConvolution2D
 import tensorflow.keras.backend as K
-import gc
 import logging
 
 
@@ -35,7 +34,8 @@ def resize_image(image, shape = (224,224)):
 @tf.function
 def imagenet_preprocessing(img, label):
     img = tf.cast(img, tf.float32)
-    img = resize_image(img)
+    img = tf.image.resize(img, size=(224,224), method='bicubic')
+    # img = resize_image(img)
     img = tf.keras.applications.vgg16.preprocess_input(img, data_format=None)
     return img, label
 
@@ -56,6 +56,13 @@ def load_dataset(data_path, batch_size=128):
   test_ds = test_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
   return train_ds, valid_ds, test_ds, input_shape, num_classes
+
+def assert_equal_models(model1, model2):
+  for idx, layer in enumerate(model1.layers):
+    if isinstance(layer, tf.keras.layers.Conv2D) or isinstance(layer, tf.keras.layers.Dense):
+      w1 = layer.get_weights()[0]
+      w2 = model2.layers[idx].get_weights()[0]
+      tf.debugging.assert_equal(w1, w2)
 
 def calculate_model_weights(model):
     total_weights = 0
@@ -99,6 +106,41 @@ def calculate_model_weights(model):
 
     return int(total_weights)
 
+def extract_model_parts(model):
+
+    layers = []
+    configs = []
+    weights = []
+    for layer in model.layers:
+        layers.append(type(layer))
+        configs.append(layer.get_config())
+        try:
+            weights.append(layer.get_weights())
+        except:
+            weights.append(None)
+
+    assert len(layers)== len(configs) and len(layers) == len(weights)
+    return layers, configs, weights
+
+def create_model_from_parts(layers, configs, weights,optimizer, loss, metric):
+    first_conv_idx = 0
+    if not isinstance(layers[0], tf.keras.layers.Conv2D):
+      first_conv_idx = 1
+
+    input = tf.keras.layers.Input((224,224,3))
+    layer = layers[first_conv_idx](**configs[first_conv_idx])
+    x = layer(input)
+    layer.set_weights(weights[first_conv_idx])
+
+    first_conv_idx+=1
+    for idx, layer in enumerate(layers[first_conv_idx:]):
+      new_layer = layer(**configs[first_conv_idx+idx])
+      x = new_layer(x)
+      new_layer.set_weights(weights[first_conv_idx+idx])
+
+    model = tf.keras.Model(input, x)
+    model.compile(optimizer, loss, metric)
+    return model
 
 
 def PCA(x, m, high_dim=False):

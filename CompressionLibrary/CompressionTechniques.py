@@ -283,11 +283,11 @@ class InsertDenseSparse(ModelCompression):
             return loss
 
         start_time = datetime.now()
-        optimizer = tf.keras.optimizers.Adam() 
+        optimizer = tf.keras.optimizers.Adam(1e-5) 
         for i in range(self.new_layer_iterations):
             loss = train_step_sparse(basis, sparse_dict, weights)
             if self.new_layer_verbose and i%100==0:
-                self.logger.info(f'Epoch {i} of RxP Loss: {loss}')
+                self.logger.info(f'Epoch {i} of basis x sparse Loss: {loss}')
         
         training_time = (datetime.now() - start_time).total_seconds()
         pred = tf.matmul(basis, sparse_dict)

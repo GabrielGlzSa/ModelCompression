@@ -1,10 +1,9 @@
-from distutils.command.config import config
-from hashlib import new
+from gc import callbacks
 import tensorflow as tf
 import logging
-from CompressionLibrary.utils import load_dataset
-from CompressionLibrary.CompressionTechniques import MLPCompression
-from CompressionLibrary.custom_layers import MLPConv
+from CompressionLibrary.utils import load_dataset, extract_model_parts, create_model_from_parts, calculate_model_weights
+from CompressionLibrary.CompressionTechniques import *
+from CompressionLibrary.custom_callbacks import EarlyStoppingReward
 
 try:
   # Use below for TPU
@@ -20,7 +19,7 @@ except:
   print('ERROR: Not connected to a TPU runtime; Using GPU strategy instead!')
   strategy = tf.distribute.OneDeviceStrategy(device="/gpu:0")
   data_path = './data'
-  
+
 
 print('Number of devices: {}'.format(strategy.num_replicas_in_sync))
 
@@ -40,99 +39,45 @@ def create_model(optimizer, loss, metric):
     model.compile(optimizer=optimizer, loss=loss,
                     metrics=metric)
 
-    return model       
-
-target_layers = ['block2_conv1', 'block2_conv2']
-
-def clone_layer(layer, layer_input):
-    config = layer.get_config()
-    new_layer = type(layer)(**config)
-
-    _ = new_layer(layer_input)
-    new_layer.set_weights(layer.get_weights())
-    return new_layer
-
-def clone_model(model_layers, input_shape, new_layers, target_layers, optimizer, loss, metric):
-    assert len(new_layers) == len(target_layers)
-    inputs = tf.keras.layers.Input(shape=input_shape)
-    if isinstance(model_layers[0], tf.keras.layers.InputLayer):
-        start = 1
-    else:
-        start = 0
-
-    new_layer = clone_layer(model_layers[start], inputs)
-    x = new_layer(inputs)
-    
-    for layer in model_layers[start+1:]:
-        if layer.name in target_layers:
-            idx = target_layers.index(layer.name)
-            new_layer = clone_layer(target_layers[idx], x)
-        else:
-            new_layer = clone_layer(layer, x)
-
-        x = new_layer(x)
-        
-    new_model = tf.keras.Model(inputs, x)
-    new_model.compile(optimizer, loss, metric)
-    return new_model
-
-
-optimizer = tf.keras.optimizers.Adam()
-loss = tf.keras.losses.SparseCategoricalCrossentropy()
-metric = tf.keras.metrics.SparseCategoricalAccuracy()
-model = create_model(optimizer, loss, metric)
-
-def extract_model_parts(model):
-
-    layers = []
-    configs = []
-    weights = []
-    for layer in model.layers[1:]:
-        layers.append(type(layer))
-        configs.append(layer.get_config())
-        try:
-            weights.append(layer.get_weights())
-        except:
-            weights.append(None)
-            print('Layer  has no get_weights()')
-
-
-    return layers, configs, weights
-
-
-def create_model_from_parts(layers, configs, weights):
-
-    sequential = []
-    for idx, layer in enumerate(layers):
-        if idx==0:
-            sequential.append(layer(**configs[idx], input_shape=(224,224,3)))
-        else:
-            sequential.append(layer(**configs[idx]))
-
-    model = tf.keras.Sequential(sequential)
-    
-    for idx, layer in enumerate(model.layers):
-        layer.set_weights(weights[idx])
     return model
 
+#target_layers = ['block2_conv1', 'block2_conv2']
+target_layers = ['fc1']
+
+train_ds, valid_ds, test_ds, input_shape, _ = load_dataset(data_path)
+
+with strategy.scope():
+    optimizer = tf.keras.optimizers.Adam(1e-5)
+    loss = tf.keras.losses.SparseCategoricalCrossentropy()
+    metric = tf.keras.metrics.SparseCategoricalAccuracy()
+    model = create_model(optimizer, loss, metric)
+    loss, valid_acc = model.evaluate(valid_ds)
+
+weights_before = calculate_model_weights(model)
 
 new_layers = []
 for layer_name in target_layers:
-    compressor = MLPCompression(model=model, dataset=None, optimizer=optimizer, loss=loss, metrics=metric, input_shape=(224,224,3))
-    compressor.compress_layer(layer_name)
+    compressor = InsertDenseSparse(model=model, dataset=None, optimizer=optimizer, loss=loss, metrics=metric, input_shape=(224,224,3))
+    compressor.compress_layer(layer_name, new_layer_iterations=2000, new_layer_verbose=True)
     model = compressor.get_model()
+    new_layers.append(compressor.new_layer_name)
 
 
-
-
-    
 layers, configs, weights = extract_model_parts(model)
 
 with strategy.scope():
-    train_ds, valid_ds, test_ds, input_shape, _ = load_dataset(data_path)
-    optimizer2 = tf.keras.optimizers.Adam()
+    
+    optimizer2 = tf.keras.optimizers.Adam(1e-5)
     loss2 = tf.keras.losses.SparseCategoricalCrossentropy()
     metric2 = tf.keras.metrics.SparseCategoricalAccuracy()
-    model2 = create_model_from_parts(layers, configs, weights)
+    model2 = create_model_from_parts(layers, configs, weights, optimizer2, loss2, metric2)
     model2.compile(optimizer2, loss2, metric2)
-    model2.fit(train_ds, epochs=10, validation_data=valid_ds)
+    for layer in model2.layers:
+        if layer.name in new_layers:
+            layer.trainable = True
+        else:
+            layer.trainable = False
+    model.summary()
+    model2.summary()
+    cb = EarlyStoppingReward()
+    model2.fit(train_ds, epochs=10, validation_data=valid_ds, callbacks=[])
