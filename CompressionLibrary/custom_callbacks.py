@@ -74,12 +74,14 @@ class EarlyStoppingReward(tf.keras.callbacks.Callback):
         self.wait += 1
         if self._is_improvement(current_acc, self.best_acc):
             self.best_acc = current_acc
+            self.best_reward = current_reward
             self.best_epoch = epoch
             if self.restore_best_weights:
                 self.best_weights = self.model.get_weights()
             # Only restart wait if we beat both the baseline and our previous best.
             if self._is_improvement(current_acc, self.baseline_acc):
                 self.wait = 0
+                self.logger.info(f'Resetting wait. Callback waiting another {self.patience} epochs.')
 
         # Only check after the first epoch.
         if self.wait >= self.patience and epoch > 0:
@@ -94,7 +96,7 @@ class EarlyStoppingReward(tf.keras.callbacks.Callback):
     def on_train_end(self, logs=None):
         if self.stopped_epoch > 0 and self.verbose > 0:
             self.logger.info(
-                f'Epoch {self.stopped_epoch + 1}: early stopping with {self.best} {self.monitor}.')
+                f'Epoch {self.stopped_epoch + 1}: early stopping with {self.best_acc} accuracy.')
 
 
     def get_monitor_values(self, logs):
