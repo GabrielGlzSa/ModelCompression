@@ -44,46 +44,54 @@ def create_model(optimizer, loss, metric):
 #target_layers = ['block2_conv1', 'block2_conv2']
 target_layers = ['fc1']
 
-train_ds, valid_ds, test_ds, input_shape, _ = load_dataset(data_path)
+
 
 with strategy.scope():
+    train_ds, valid_ds, test_ds, input_shape, _ = load_dataset(data_path)
     optimizer = tf.keras.optimizers.Adam(1e-5)
     loss = tf.keras.losses.SparseCategoricalCrossentropy()
     metric = tf.keras.metrics.SparseCategoricalAccuracy()
     model = create_model(optimizer, loss, metric)
-    loss, valid_acc = model.evaluate(valid_ds)
+    model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
+        filepath=data_path+'/models/imagenet_best_checkpoint',
+        save_weights_only=False,
+        monitor='val_accuracy',
+        mode='max',
+        save_best_only=True)
+    model.fit(train_ds, epochs=30, validation_data=valid_ds, callbacks=[model_checkpoint_callback])
+#     loss, valid_acc = model.evaluate(valid_ds)
 
-weights_before = calculate_model_weights(model)
+# weights_before = calculate_model_weights(model)
 
-optimizer = tf.keras.optimizers.Adam(1e-5)
-loss = tf.keras.losses.SparseCategoricalCrossentropy()
-metric = tf.keras.metrics.SparseCategoricalAccuracy()
-new_layers = []
-for layer_name in target_layers:
-    compressor = InsertDenseSparse(model=model, dataset=None, optimizer=optimizer, loss=loss, metrics=metric, input_shape=(224,224,3))
-    compressor.compress_layer(layer_name, new_layer_iterations=1200, new_layer_verbose=True)
-    model = compressor.get_model()
-    new_layers.append(compressor.new_layer_name)
+# optimizer = tf.keras.optimizers.Adam(1e-5)
+# loss = tf.keras.losses.SparseCategoricalCrossentropy()
+# metric = tf.keras.metrics.SparseCategoricalAccuracy()
+# new_layers = []
+# for layer_name in target_layers:
+#     compressor = InsertDenseSparse(model=model, dataset=None, optimizer=optimizer, loss=loss, metrics=metric, input_shape=(224,224,3))
+#     compressor.compress_layer(layer_name, new_layer_iterations=1200, new_layer_verbose=True)
+#     model = compressor.get_model()
+#     new_layers.append(compressor.new_layer_name)
 
 
-layers, configs, weights = extract_model_parts(model)
+# layers, configs, weights = extract_model_parts(model)
 
-with strategy.scope():
+# with strategy.scope():
     
-    optimizer2 = tf.keras.optimizers.Adam(1e-5)
-    loss2 = tf.keras.losses.SparseCategoricalCrossentropy()
-    metric2 = tf.keras.metrics.SparseCategoricalAccuracy()
-    model2 = create_model_from_parts(layers, configs, weights, optimizer2, loss2, metric2)
-    model2.compile(optimizer2, loss2, metric2)
-    for layer in model2.layers:
-        if layer.name in new_layers:
-            layer.trainable = True
-        else:
-            layer.trainable = False
-    model.summary()
-    model2.summary()
-    cb = EarlyStoppingReward(weights_before=weights_before, verbose=1)
-    model2.fit(train_ds, epochs=10, validation_data=valid_ds, callbacks=[cb])
-    loss, acc = model2.evaluate(test_ds)
-    weights_after = calculate_model_weights(model2)
-    print(f'Model has {weights_after} weights and an accuracy of {acc}.')
+#     optimizer2 = tf.keras.optimizers.Adam(1e-5)
+#     loss2 = tf.keras.losses.SparseCategoricalCrossentropy()
+#     metric2 = tf.keras.metrics.SparseCategoricalAccuracy()
+#     model2 = create_model_from_parts(layers, configs, weights, optimizer2, loss2, metric2)
+#     model2.compile(optimizer2, loss2, metric2)
+#     for layer in model2.layers:
+#         if layer.name in new_layers:
+#             layer.trainable = True
+#         else:
+#             layer.trainable = False
+#     model.summary()
+#     model2.summary()
+#     cb = EarlyStoppingReward(weights_before=weights_before, verbose=1)
+#     model2.fit(train_ds, epochs=10, validation_data=valid_ds, callbacks=[cb])
+#     loss, acc = model2.evaluate(test_ds)
+#     weights_after = calculate_model_weights(model2)
+#     print(f'Model has {weights_after} weights and an accuracy of {acc}.')

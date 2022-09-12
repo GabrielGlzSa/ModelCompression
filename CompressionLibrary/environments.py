@@ -63,6 +63,7 @@ class ModelCompressionEnv():
 
 
         self.conv_compressors.remove('SparseConvolutionCompression')
+        self.conv_compressors.remove('MLPCompression')
         self._layer_counter = 0
 
         max_filters = self.get_highest_num_filters()
