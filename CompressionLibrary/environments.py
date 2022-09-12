@@ -83,8 +83,13 @@ class ModelCompressionEnv():
         
         if self.strategy:
             self.logger.debug('Strategy found. Using strategy to evaluate.')
-            self.model.save(self.model_path)
+            layers, configs, weights = extract_model_parts(self.model)
+
             with self.strategy.scope():
+                optimizer2 = tf.keras.optimizers.Adam(1e-5)
+                loss2 = tf.keras.losses.SparseCategoricalCrossentropy()
+                metric2 = tf.keras.metrics.SparseCategoricalAccuracy()
+                self.model = create_model_from_parts(layers, configs, weights, optimizer2, loss2, metric2)
                 self.logger.debug('Evaluating model using test set.')
                 test_loss, self.test_acc_before = self.model.evaluate(self.test_ds, verbose=self.verbose)
                 self.logger.info(f'Test accuracy is {self.test_acc_before} and loss {test_loss}')
