@@ -12,7 +12,7 @@ import logging
 class ModelCompressionEnv():
     def __init__(self, compressors_list, create_model_func, compr_params,
                  train_ds, validation_ds, test_ds,
-                 layer_name_list, input_shape, current_state_source='layer_input', next_state_source='layer_output', verbose=0, get_state_from='validation', tuning_epochs=10, num_feature_maps=128, tuning_batch_size=32, strategy=None, model_path='./data'):
+                 layer_name_list, input_shape, current_state_source='layer_input', next_state_source='layer_output', verbose=2, get_state_from='validation', tuning_epochs=20, num_feature_maps=128, tuning_batch_size=32, strategy=None, model_path='./data'):
 
         self._episode_ended = False
         self.verbose = verbose

@@ -34,7 +34,7 @@ class AddSparseConnectionsCallback(tf.keras.callbacks.Callback):
 
 class EarlyStoppingReward(tf.keras.callbacks.Callback):
 
-    def __init__(self, weights_before, baseline_acc=0.5, min_delta=0, patience=5, verbose=0, restore_best_weights=True):
+    def __init__(self, weights_before, baseline_acc=0.7, min_delta=0, patience=2, start_epoch=10 ,verbose=0, restore_best_weights=True):
         """
         
         """
@@ -42,6 +42,7 @@ class EarlyStoppingReward(tf.keras.callbacks.Callback):
         self.verbose = verbose
         self.weights_after = None
         self.weights_before = weights_before
+        self.start_epoch = start_epoch
         self.baseline_acc = baseline_acc
         self.min_delta = abs(min_delta)
         self.wait = 0
@@ -83,6 +84,9 @@ class EarlyStoppingReward(tf.keras.callbacks.Callback):
                 self.wait = 0
                 self.logger.info(f'Resetting wait. Callback waiting another {self.patience} epochs.')
 
+        if epoch < self.start_epoch:
+            self.wait = 0
+
         # Only check after the first epoch.
         if self.wait >= self.patience and epoch > 0:
             self.stopped_epoch = epoch
@@ -101,12 +105,12 @@ class EarlyStoppingReward(tf.keras.callbacks.Callback):
 
     def get_monitor_values(self, logs):
         logs = logs or {}
-        self.logger.debug(f'Old model had {self.weights_before} weights.')
+        self.logger.info(f'Old model had {self.weights_before} weights.')
         acc_after = logs.get('val_sparse_categorical_accuracy')
         weights_after = utils.calculate_model_weights(self.model)
-        self.logger.debug(f'Model has {acc_after} accuracy, {weights_after} weights.')
+        self.logger.info(f'Model has {acc_after} accuracy, {weights_after} weights.')
         reward = 1 - (weights_after / self.weights_before) + acc_after
-        self.logger.debug(f'Reward is {reward}.')
+        self.logger.info(f'Reward is {reward}.')
 
         return acc_after, reward
 

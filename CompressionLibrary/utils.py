@@ -99,7 +99,7 @@ def calculate_model_weights(model):
         else:
             weights_after = np.sum([K.count_params(w) for w in layer.trainable_weights])
 
-        logger.info(f'Layer {layer.name} has {weights_after} weights.')
+        logger.debug(f'Layer {layer.name} has {weights_after} weights.')
         total_weights += weights_after
         # Return layer to previous trainable state
         layer.trainable = trainable_previous_config
