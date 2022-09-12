@@ -320,7 +320,7 @@ class ModelCompressionEnv():
             self._layer_counter += 1
             if self._layer_counter == len(self.layer_name_list):
                 self._episode_ended = True
-                Rcb = EarlyStoppingReward(acc_before=self.val_acc_before, weights_before=self.weights_before, verbose=1)
+                Rcb = EarlyStoppingReward(weights_before=self.weights_before, verbose=1)
                 self.callbacks.append(Rcb)
 
                 if self.strategy:
