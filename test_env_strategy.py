@@ -77,6 +77,6 @@ print(conv_shape, dense_shape)
 random_conv = RandomAgent('random_conv', conv_n_actions)
 random_fc = RandomAgent('random_fc', fc_n_actions)
 
-results = evaluate_agents(env, random_conv,random_fc, save_name=data_path+'/data/test_evaluate.csv', n_games=5)
+results = evaluate_agents(env, random_conv,random_fc, 'test_env', 1, save_name=data_path+'/test_evaluate.csv', n_games=5)
 
 print(results)

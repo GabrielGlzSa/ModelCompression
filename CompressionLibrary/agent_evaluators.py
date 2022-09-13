@@ -121,7 +121,7 @@ def play_and_record(conv_agent, fc_agent, env, conv_replay, fc_replay, n_steps=1
 
     return np.mean(rewards)
 
-def evaluate_agents(env, conv_agent, fc_agent, save_name, n_games=2):
+def evaluate_agents(env, conv_agent, fc_agent, run_id, test_number, save_name, n_games=2):
     """ Plays n_games full games. If greedy, picks actions as argmax(qvalues). Returns mean reward. """
     rewards = []
     acc = []
@@ -130,10 +130,14 @@ def evaluate_agents(env, conv_agent, fc_agent, save_name, n_games=2):
     df_results = pd.DataFrame()
     logger = logging.getLogger(__name__)
     total_time = 0
+    try:
+        df_results = pd.read_csv.to_csv(save_name)
+    except:
+        df_results = pd.DataFrame()
+
     for game_id in range(n_games):
         tf.keras.backend.clear_session()
         s = env.reset()
-        info = None
         start = datetime.now()
         for k in range(1,len(env.layer_name_list)+1):
             next_layer_name = env.layer_name_list[env._layer_counter]
@@ -155,6 +159,9 @@ def evaluate_agents(env, conv_agent, fc_agent, save_name, n_games=2):
                 break
         game_time = (datetime.now() - start).total_seconds()
         actions = info['actions']
+        info['run_id'] = run_id
+        info['test_number'] = test_number
+        info['game_id'] = game_id
         logger.info(f'Actions taken in game {game_id} were  {actions} for a reward of {r}. Took {game_time} seconds.')
         total_time += game_time
 
