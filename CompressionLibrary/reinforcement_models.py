@@ -23,11 +23,6 @@ class DQNAgent:
         self.model = tf.keras.Model(inputs=input, outputs=output, name=name)
         self.epsilon = epsilon
 
-    def get_symbolic_qvalues(self, state_t):
-        """takes agent's observation, returns qvalues. Both are tf Tensors"""
-        qvalues = self.model(state_t)
-        return qvalues
-
     def get_qvalues(self, state_t):
         """Same as symbolic step except it operates on numpy arrays"""
         qvalues = self.model(state_t)

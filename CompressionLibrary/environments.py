@@ -318,39 +318,23 @@ class ModelCompressionEnv():
         else:
             self._state = self.get_state('next_state')
             self._layer_counter += 1
-            if self._layer_counter == len(self.layer_name_list):
-                self._episode_ended = True
-                Rcb = EarlyStoppingReward(weights_before=self.weights_before, verbose=1)
-                self.callbacks.append(Rcb)
 
-                if self.strategy:
-                    self.logger.debug('Strategy found. Using strategy to fit model.')
+        if self._episode_ended or self._layer_counter == len(self.layer_name_list):
+            self._episode_ended = True
+            Rcb = EarlyStoppingReward(weights_before=self.weights_before, verbose=1)
+            self.callbacks.append(Rcb)
 
-                    # Extract core info of model to create another inside scope.
-                    layers, configs, weights = extract_model_parts(self.model)
+            if self.strategy:
+                self.logger.debug('Strategy found. Using strategy to fit model.')
 
-                    with self.strategy.scope():
-                        optimizer2 = tf.keras.optimizers.Adam(1e-5)
-                        loss2 = tf.keras.losses.SparseCategoricalCrossentropy()
-                        metric2 = tf.keras.metrics.SparseCategoricalAccuracy()
-                        self.model = create_model_from_parts(layers, configs, weights, optimizer2, loss2, metric2)
-                        for layer in self.model.layers:
-                            if layer.name in self.layer_name_list:
-                                layer.trainable = True
-                            else:
-                                layer.trainable = False
-                        self.model.summary()
-                        self.model.fit(self.train_ds, epochs=self.tuning_epochs, callbacks=self.callbacks, validation_data=self.validation_ds)
-                        test_loss, test_acc_after = self.model.evaluate(self.test_ds, verbose=self.verbose)
-                        val_loss, val_acc_after = self.model.evaluate(self.validation_ds, verbose=self.verbose)
+                # Extract core info of model to create another inside scope.
+                layers, configs, weights = extract_model_parts(self.model)
 
-                    # Set all layers back to trainable.
-                    for layer in self.model.layers:
-                        layer.trainable = True
-
-                else:
-
-                    # Train only the modified layers.
+                with self.strategy.scope():
+                    optimizer2 = tf.keras.optimizers.Adam(1e-5)
+                    loss2 = tf.keras.losses.SparseCategoricalCrossentropy()
+                    metric2 = tf.keras.metrics.SparseCategoricalAccuracy()
+                    self.model = create_model_from_parts(layers, configs, weights, optimizer2, loss2, metric2)
                     for layer in self.model.layers:
                         if layer.name in self.layer_name_list:
                             layer.trainable = True
@@ -358,13 +342,30 @@ class ModelCompressionEnv():
                             layer.trainable = False
                     self.model.summary()
                     self.model.fit(self.train_ds, epochs=self.tuning_epochs, callbacks=self.callbacks, validation_data=self.validation_ds)
-
-                    # Set all layers back to trainable.
-                    for layer in self.model.layers:
-                        layer.trainable = True
-
                     test_loss, test_acc_after = self.model.evaluate(self.test_ds, verbose=self.verbose)
                     val_loss, val_acc_after = self.model.evaluate(self.validation_ds, verbose=self.verbose)
+
+                # Set all layers back to trainable.
+                for layer in self.model.layers:
+                    layer.trainable = True
+
+            else:
+
+                # Train only the modified layers.
+                for layer in self.model.layers:
+                    if layer.name in self.layer_name_list:
+                        layer.trainable = True
+                    else:
+                        layer.trainable = False
+                self.model.summary()
+                self.model.fit(self.train_ds, epochs=self.tuning_epochs, callbacks=self.callbacks, validation_data=self.validation_ds)
+
+                # Set all layers back to trainable.
+                for layer in self.model.layers:
+                    layer.trainable = True
+
+                test_loss, test_acc_after = self.model.evaluate(self.test_ds, verbose=self.verbose)
+                val_loss, val_acc_after = self.model.evaluate(self.validation_ds, verbose=self.verbose)
 
         reward = weight_diff + test_acc_after
         info['test_acc_before'] = self.test_acc_before
