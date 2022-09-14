@@ -7,7 +7,7 @@ import gc
 from datetime import datetime
 import logging
 
-def make_env_imagenet(create_model, train_ds, valid_ds, test_ds, input_shape, layer_name_list, num_feature_maps, tuning_batch_size, current_state_source='layer_input', next_state_source='layer_output', strategy=None, model_path='./data'):
+def make_env_imagenet(create_model, train_ds, valid_ds, test_ds, input_shape, layer_name_list, num_feature_maps, tuning_batch_size, tuning_epochs, current_state_source='layer_input', next_state_source='layer_output', strategy=None, model_path='./data'):
  
     
 
@@ -40,7 +40,7 @@ def make_env_imagenet(create_model, train_ds, valid_ds, test_ds, input_shape, la
     env = ModelCompressionEnv(compressors_list, create_model, parameters,
                                       train_ds, valid_ds, test_ds,
                                       layer_name_list, input_shape, current_state_source=current_state_source, next_state_source=next_state_source, 
-                                      num_feature_maps=num_feature_maps, tuning_batch_size=tuning_batch_size, verbose=1, strategy=strategy, model_path=model_path)
+                                      num_feature_maps=num_feature_maps, tuning_batch_size=tuning_batch_size, verbose=2, tuning_epochs=tuning_epochs,strategy=strategy, model_path=model_path)
 
     return env
 

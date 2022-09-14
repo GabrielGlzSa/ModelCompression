@@ -56,11 +56,6 @@ class DQNAgent:
         self.model = tf.keras.Model(inputs=input, outputs=output, name=name)
         self.epsilon = epsilon
 
-    def get_symbolic_qvalues(self, state_t):
-        """takes agent's observation, returns qvalues. Both are tf Tensors"""
-        qvalues = self.model(state_t)
-        return qvalues
-
     def get_qvalues(self, state_t):
         """Same as symbolic step except it operates on numpy arrays"""
         qvalues = self.model(state_t)
@@ -96,16 +91,16 @@ def play_and_record(agent, env, exp_replay, n_steps=1):
     rewards = 0
     # Play the game for n_steps as per instructions above
     for _ in range(n_steps):
-      qvalues = agent.get_qvalues(np.expand_dims(s, axis=0)).numpy()
-      action = agent.sample_actions(qvalues=qvalues)[0]
+        qvalues = agent.get_qvalues(np.expand_dims(s, axis=0)).numpy()
+        action = agent.sample_actions(qvalues=qvalues)[0]
 
-      new_s, r, done, info = env.step(action)
+        new_s, r, done, info = env.step(action)
 
-      rewards += r
-      exp_replay.add(s, action, r, new_s, done)
-      s = new_s
-      if done:
-        s = env.reset()
+        rewards += r
+        exp_replay.add(s, action, r, new_s, done)
+        s = new_s
+        if done:
+            s = env.reset()
         
     return rewards
 
