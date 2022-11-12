@@ -39,8 +39,8 @@ def imagenet_preprocessing(img, label):
     img = tf.keras.applications.vgg16.preprocess_input(img, data_format=None)
     return img, label
 
-def load_dataset(data_path, batch_size=128):
-  splits, info = tfds.load('imagenet2012', as_supervised=True, with_info=True, shuffle_files=True, 
+def load_dataset(data_path, batch_size=32):
+  splits, info = tfds.load('imagenet2012_subset/1pct', as_supervised=True, with_info=True, shuffle_files=True, 
                               split=['train[:80%]', 'train[80%:]','validation'], data_dir=data_path)
 
   (train_examples, validation_examples, test_examples) = splits
@@ -55,7 +55,7 @@ def load_dataset(data_path, batch_size=128):
   valid_ds = validation_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(batch_size).prefetch(tf.data.AUTOTUNE)
   test_ds = test_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
-  return train_ds, valid_ds, test_ds, input_shape, num_classes
+  return train_ds, valid_ds, test_ds, input_shape, num_classes, num_examples
 
 def assert_equal_models(model1, model2):
   for idx, layer in enumerate(model1.layers):
@@ -65,82 +65,79 @@ def assert_equal_models(model1, model2):
       tf.debugging.assert_equal(w1, w2)
 
 def calculate_model_weights(model):
-    total_weights = 0
-    logger = logging.getLogger(__name__)
-    for layer in model.layers:
-        # Save trainable state.
-        trainable_previous_config = layer.trainable
-        # Set layer to trainable to calculate number of parameters.
-        layer.trainable = True
-        
-        if 'DeepComp' in layer.name:
-            weights, _ = layer.get_weights()
-            num_zeroes = tf.math.count_nonzero(tf.abs(weights) == 0.0).numpy()
-            weights_before = np.sum([K.count_params(w) for w in layer.trainable_weights])
-            weights_after = weights_before - num_zeroes
-        elif isinstance(layer, SparseSVD):
-            basis, sparse_dict, bias = layer.get_weights()
-            non_zeroes_sparse = tf.math.count_nonzero(sparse_dict != 0.0).numpy()
-            weights_after = tf.size(basis) + non_zeroes_sparse + tf.size(bias)
-        elif isinstance(layer, SparseConnectionsConv2D):
-            kernel_size = layer.get_config()['kernel_size']
-            connections = layer.get_connections()
-            num_zeroes = len(connections) - np.sum(connections)
-            if isinstance(kernel_size, int):
-                channel_weights = kernel_size**2
-            else:
-                channel_weights = tf.reduce_prod(kernel_size)
-            weights_before = np.sum([K.count_params(w) for w in layer.trainable_weights])
-            weights_after = weights_before - (channel_weights * num_zeroes)
-        elif isinstance(layer, SparseConvolution2D):
-            P, Q, S, bias = layer.get_weights()
-            num_zeroes_sparse = tf.math.count_nonzero(S == 0.0).numpy()
-            weights_after = tf.size(P) + tf.size(Q) + (tf.size(S) - num_zeroes_sparse) + tf.size(bias)
-        else:
-            weights_after = np.sum([K.count_params(w) for w in layer.trainable_weights])
+  total_weights = 0
+  logger = logging.getLogger(__name__)
+  for layer in model.layers:
+    # Save trainable state.
+    trainable_previous_config = layer.trainable
+    # Set layer to trainable to calculate number of parameters.
+    layer.trainable = True
+    
+    if 'DeepComp' in layer.name:
+      weights, _ = layer.get_weights()
+      num_zeroes = tf.math.count_nonzero(tf.abs(weights) == 0.0).numpy()
+      weights_before = np.sum([K.count_params(w) for w in layer.trainable_weights])
+      weights_after = weights_before - num_zeroes
+    elif isinstance(layer, SparseSVD):
+      basis, sparse_dict, bias = layer.get_weights()
+      non_zeroes_sparse = tf.math.count_nonzero(sparse_dict != 0.0).numpy()
+      weights_after = tf.size(basis) + non_zeroes_sparse + tf.size(bias)
+    elif isinstance(layer, SparseConnectionsConv2D):
+      kernel_size = layer.get_config()['kernel_size']
+      connections = layer.get_connections()
+      num_zeroes = len(connections) - np.sum(connections)
+      if isinstance(kernel_size, int):
+          channel_weights = kernel_size**2
+      else:
+          channel_weights = tf.reduce_prod(kernel_size)
+      weights_before = np.sum([K.count_params(w) for w in layer.trainable_weights])
+      weights_after = weights_before - (channel_weights * num_zeroes)
+    elif isinstance(layer, SparseConvolution2D):
+      P, Q, S, bias = layer.get_weights()
+      num_zeroes_sparse = tf.math.count_nonzero(S == 0.0).numpy()
+      weights_after = tf.size(P) + tf.size(Q) + (tf.size(S) - num_zeroes_sparse) + tf.size(bias)
+    else:
+      weights_after = np.sum([K.count_params(w) for w in layer.trainable_weights])
 
-        logger.debug(f'Layer {layer.name} has {weights_after} weights.')
-        total_weights += weights_after
-        # Return layer to previous trainable state
-        layer.trainable = trainable_previous_config
+    logger.debug(f'Layer {layer.name} has {weights_after} weights.')
+    total_weights += weights_after
+    # Return layer to previous trainable state
+    layer.trainable = trainable_previous_config
 
-    return int(total_weights)
+  logger.debug(f'Model has {total_weights} weights.')
+  return int(total_weights)
 
 def extract_model_parts(model):
+  layers = []
+  configs = []
+  weights = []
+  for layer in model.layers:
+    layers.append(type(layer))
+    configs.append(layer.get_config())
+    weights.append(layer.get_weights())
 
-    layers = []
-    configs = []
-    weights = []
-    for layer in model.layers:
-        layers.append(type(layer))
-        configs.append(layer.get_config())
-        try:
-            weights.append(layer.get_weights())
-        except:
-            weights.append(None)
+  assert len(layers)== len(configs) and len(layers) == len(weights)
+  return layers, configs, weights
 
-    assert len(layers)== len(configs) and len(layers) == len(weights)
-    return layers, configs, weights
+def create_model_from_parts(layers, configs, weights,optimizer, loss, metric, input_shape=(224,224,3)):
+  first_conv_idx = 0
+  if not isinstance(layers[0], tf.keras.layers.Conv2D):
+    first_conv_idx = 1
 
-def create_model_from_parts(layers, configs, weights,optimizer, loss, metric):
-    first_conv_idx = 0
-    if not isinstance(layers[0], tf.keras.layers.Conv2D):
-      first_conv_idx = 1
+  input = tf.keras.layers.Input(input_shape)
+  layer = layers[first_conv_idx](**configs[first_conv_idx])
+  x = layer(input)
+  layer.set_weights(weights[first_conv_idx])
 
-    input = tf.keras.layers.Input((224,224,3))
-    layer = layers[first_conv_idx](**configs[first_conv_idx])
-    x = layer(input)
-    layer.set_weights(weights[first_conv_idx])
+  first_conv_idx+=1
+  for idx, layer in enumerate(layers[first_conv_idx:]):
+    new_layer = layer(**configs[first_conv_idx+idx])
+    x = new_layer(x)
+    new_layer.set_weights(weights[first_conv_idx+idx])
 
-    first_conv_idx+=1
-    for idx, layer in enumerate(layers[first_conv_idx:]):
-      new_layer = layer(**configs[first_conv_idx+idx])
-      x = new_layer(x)
-      new_layer.set_weights(weights[first_conv_idx+idx])
-
-    model = tf.keras.Model(input, x)
-    model.compile(optimizer, loss, metric)
-    return model
+  model = tf.keras.Model(input, x)
+  model.compile(optimizer, loss, metric)
+  return model
 
 
 def PCA(x, m, high_dim=False):
@@ -182,3 +179,33 @@ def PCA(x, m, high_dim=False):
   
   return reconst, x_mean, principal_vals, principal_components
   
+
+class OUActionNoise:
+  """
+  Taken from https://keras.io/examples/rl/ddpg_pendulum/
+  """
+  def __init__(self, mean, std_deviation, theta=0.15, dt=1e-2, x_initial=None):
+      self.theta = theta
+      self.mean = mean
+      self.std_dev = std_deviation
+      self.dt = dt
+      self.x_initial = x_initial
+      self.reset()
+
+  def __call__(self):
+      # Formula taken from https://www.wikipedia.org/wiki/Ornstein-Uhlenbeck_process.
+      x = (
+          self.x_prev
+          + self.theta * (self.mean - self.x_prev) * self.dt
+          + self.std_dev * np.sqrt(self.dt) * np.random.normal(size=self.mean.shape)
+      )
+      # Store x into x_prev
+      # Makes next noise dependent on current one
+      self.x_prev = x
+      return x
+
+  def reset(self):
+      if self.x_initial is not None:
+          self.x_prev = self.x_initial
+      else:
+          self.x_prev = np.zeros_like(self.mean)

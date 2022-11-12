@@ -37,7 +37,7 @@ print('Number of devices: {}'.format(strategy.num_replicas_in_sync))
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s -%(levelname)s - %(funcName)s -  %(message)s')
 logging.root.setLevel(logging.DEBUG)
 
-dataset = 'imagenet2012'
+dataset = 'imagenet2012_subset'
 current_state = 'layer_input'
 next_state = 'layer_output'
 
@@ -46,13 +46,15 @@ epsilon_decay = 0.999
 min_epsilon = 0.1
 replay_buffer_size = 10 ** 5
 
-rl_iterations = 10000
-eval_n_samples = 10
+rl_iterations = 1000
+eval_n_samples = 5
 n_samples_mode = 128
-batch_size_per_replica = 128
+batch_size_per_replica = 32
 tuning_batch_size = batch_size_per_replica * strategy.num_replicas_in_sync
 rl_batch_size = tuning_batch_size
-tuning_epochs = 1
+tuning_epochs = 4
+verbose = 1
+tuning_mode = 'last'
 
 layer_name_list = [ 'block2_conv1', 'block2_conv2', 
                     'block3_conv1', 'block3_conv2', 'block3_conv3',
@@ -60,6 +62,7 @@ layer_name_list = [ 'block2_conv1', 'block2_conv2',
                     'block5_conv1', 'block5_conv2', 'block5_conv3',
                     'fc1', 'fc2']
 
+# layer_name_list = ['block2_conv1', 'block3_conv1', 'block4_conv2', 'fc1']
 
 def create_model():
     optimizer = tf.keras.optimizers.Adam(1e-5)
@@ -77,13 +80,15 @@ def create_model():
     model.compile(optimizer=optimizer, loss=loss_object,
                     metrics=train_metric)
 
+    model.summary()
+
     return model       
 
-train_ds, valid_ds, test_ds, input_shape, _ = load_dataset(data_path)
+train_ds, valid_ds, test_ds, input_shape, _ = load_dataset(data_path, 32)
 
 
 input_shape = (224,224,3)
-env = make_env_imagenet(create_model, train_ds, valid_ds, test_ds, input_shape, layer_name_list, n_samples_mode, tuning_batch_size, tuning_epochs, current_state, next_state, strategy, data_path)
+env = make_env_imagenet(create_model, train_ds, valid_ds, test_ds, input_shape, layer_name_list, n_samples_mode, tuning_batch_size, tuning_epochs, verbose, tuning_mode,current_state, next_state, strategy, data_path)
 env.model.summary()
 
 conv_shape, dense_shape = env.observation_space()
@@ -138,6 +143,8 @@ with strategy.scope():
 @tf.function
 def train_step_conv(dataset_inputs):
     state, action, rewards, next_state, done = dataset_inputs
+    state = tf.ragged.constant(state)
+    next_state = tf.ragged.constant(next_state)
     state = tf.cast(state, tf.float32)
     action = tf.cast(action, tf.int32)
     next_state = tf.cast(next_state, tf.float32)
@@ -145,7 +152,7 @@ def train_step_conv(dataset_inputs):
     rewards = tf.cast(rewards, tf.float32)
     done = 1 - tf.cast(done, tf.float32)
 
-    reference_qvalues = rewards + 0.99 * \
+    reference_qvalues = rewards + 0.01 * \
         tf.reduce_max(conv_target_network.get_qvalues(next_state), axis=1)
     reference_qvalues = reference_qvalues * (1 - done) - done
 
@@ -162,6 +169,8 @@ def train_step_conv(dataset_inputs):
 @tf.function
 def train_step_fc(dataset_inputs):
     state, action, rewards, next_state, done = dataset_inputs
+    state = tf.ragged.constant(state)
+    next_state = tf.ragged.constant(next_state)
     state = tf.cast(state, tf.float32)
     action = tf.cast(action, tf.int32)
     next_state = tf.cast(next_state, tf.float32)
@@ -169,7 +178,7 @@ def train_step_fc(dataset_inputs):
     rewards = tf.cast(rewards, tf.float32)
     done = 1 - tf.cast(done, tf.float32)
 
-    reference_qvalues = rewards + 0.99 * \
+    reference_qvalues = rewards + 0.01 * \
         tf.reduce_max(fc_target_network.get_qvalues(next_state), axis=1)
     reference_qvalues = reference_qvalues * (1 - done) - done
 
@@ -210,44 +219,15 @@ td_loss_history_fc = []
 def sample_batch(exp_replay, batch_size):
     obs_batch, act_batch, reward_batch, next_obs_batch, is_done_batch = exp_replay.sample(
         batch_size)
-    return {
-        'state': obs_batch,
-        'action': act_batch,
-        'rewards': reward_batch,
-        'next_state': next_obs_batch,
-        'done': is_done_batch,
-    }
-
-
-@tf.function
-def training_loop(state, action, rewards, next_state, done, agent, target_agent, loss_optimizer, n_actions, gamma=0.01):
-    state = tf.cast(state, tf.float32)
-    action = tf.cast(action, tf.int32)
-    next_state = tf.cast(next_state, tf.float32)
-
-    rewards = tf.cast(rewards, tf.float32)
-    done = 1 - tf.cast(done, tf.float32)
-
-    reference_qvalues = rewards + gamma * \
-        tf.reduce_max(target_agent.get_qvalues(next_state), axis=1)
-    reference_qvalues = reference_qvalues * (1 - done) - done
-
-    masks = tf.one_hot(action, n_actions)
-    with tf.GradientTape() as tape:
-        q_values = agent.get_qvalues(state)
-        q_action = tf.reduce_sum(tf.multiply(q_values, masks), axis=1)
-        td_loss = tf.reduce_mean((q_action - reference_qvalues) ** 2)
-
-    gradients = tape.gradient(td_loss, agent.weights)
-    loss_optimizer.apply_gradients(zip(gradients, agent.weights))
-    return td_loss
+    return (obs_batch,act_batch,reward_batch,next_obs_batch,is_done_batch)
+    
 
 fc_exp_replay = ReplayBuffer(replay_buffer_size)
 conv_exp_replay = ReplayBuffer(replay_buffer_size)
 
 
 print('There are {} conv and {} fc instances.'.format(len(conv_exp_replay), len(fc_exp_replay)))
-play_and_record(conv_agent, fc_agent, env, conv_exp_replay, fc_exp_replay, n_steps=1)
+play_and_record(conv_agent, fc_agent, env, conv_exp_replay, fc_exp_replay, n_games=1)
 
 print('There are {} conv and {} fc instances.'.format(len(conv_exp_replay), len(fc_exp_replay)))
 
@@ -256,7 +236,7 @@ with tqdm(total=rl_iterations,
         postfix=[conv_agent.epsilon, dict({0: 0, 1: 0, 2: 0}), dict({0: 0, 1: 0, 2: 0}), dict({0: 0, 1: 0, 2: 0})]) as t:
     for i in range(rl_iterations):
         # generate new sample
-        play_and_record(conv_agent, fc_agent, env, conv_exp_replay, fc_exp_replay, n_steps=1)
+        # play_and_record(conv_agent, fc_agent, env, conv_exp_replay, fc_exp_replay, n_games=1)
 
         # train fc
         batch_data = sample_batch(conv_exp_replay, batch_size=rl_batch_size)
@@ -277,7 +257,7 @@ with tqdm(total=rl_iterations,
         td_loss_history_fc.append(fc_loss_t)
 
         # adjust agent parameters
-        if i % 100 == 0:
+        if i % 10 == 0:
             load_weigths_into_target_network(conv_agent, conv_target_network)
             conv_target_network.model.save_weights(
                 data_path+'/checkpoints/{}_my_checkpoint_conv_agent'.format(dataset))
@@ -289,7 +269,7 @@ with tqdm(total=rl_iterations,
                     data_path+'/checkpoints/{}_my_checkpoint_fc_agent'.format(dataset))
             fc_agent.epsilon = max(fc_agent.epsilon * epsilon_decay, min_epsilon)
 
-            rw, acc, weights = evaluate_agents(env, fc_agent, conv_agent, run_id=run_id,test_number=i/10, save_name=data_path+'/test_evaluate.csv', n_games=1)            
+            rw, acc, weights = evaluate_agents(env, conv_agent, fc_agent,run_id=run_id,test_number=i/10, save_name=data_path+'/test_evaluate.csv', n_games=1)            
             mean_rw_history.append(rw)
             mean_acc_history.append(acc)
             mean_weights_history.append(weights)

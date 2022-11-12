@@ -1,75 +1,161 @@
-import sys
-import tensorflow as tf
-import matplotlib.pyplot as plt
-import numpy as np
-import logging
-import pandas as pd
-from IPython.display import clear_output
-from tqdm import tqdm
-from CompressionLibrary.utils import load_dataset, make_env, evaluate_adadeep, play_and_record_adadeep
-from CompressionLibrary.CompressionTechniques import *
-from CompressionLibrary.replay_buffer import ReplayBuffer
-from CompressionLibrary.environments import *
-from CompressionLibrary.custom_layers import ROIEmbedding, ROIEmbedding1D
-from CompressionLibrary.reinforcement_models import DQNAgent
-from CompressionLibrary import reward_functions
-import sys
-import gc
-from datetime import datetime
-from uuid import uuid4
 
-eventid = datetime.now().strftime('%Y-%m-%d-%H-%M%S-') + str(uuid4())
-dataset = 'cifar10'
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' 
+
+import tensorflow as tf
+import tensorflow_datasets as tfds
+import logging
+
+from CompressionLibrary.agent_evaluators import make_env_imagenet, evaluate_agents, play_and_record
+from CompressionLibrary.reinforcement_models import DuelingDQNAgent
+from CompressionLibrary.replay_buffer import ReplayBuffer
+
+import matplotlib.pyplot as plt
+from uuid import uuid4
+from datetime import datetime
+from tqdm import tqdm
+import pandas as pd
+import numpy as np
+
+
+dataset_name = 'mnist'
+
+run_id = datetime.now().strftime('%Y-%m-%d-%H-%M%S-') + str(uuid4())
+
+try:
+  # Use below for TPU
+  resolver = tf.distribute.cluster_resolver.TPUClusterResolver(tpu='local')
+  tf.config.experimental_connect_to_cluster(resolver)
+  # This is the TPU initialization code that has to be at the beginning.
+  tf.tpu.experimental.initialize_tpu_system(resolver)
+  print("All devices: ", tf.config.list_logical_devices('TPU'))
+  strategy = tf.distribute.TPUStrategy(resolver)
+  data_path = '/mnt/disks/mcdata/data'
+
+except:
+  print('ERROR: Not connected to a TPU runtime; Using GPU strategy instead!')
+  strategy = tf.distribute.OneDeviceStrategy(device="/gpu:0")
+  data_path = './data'
+  
+if strategy:
+    print('Number of devices: {}'.format(strategy.num_replicas_in_sync))
+
+
+# logging.basicConfig(level=logging.DEBUG, format='%(asctime)s -%(levelname)s - %(funcName)s -  %(message)s')
+logging.basicConfig(level=logging.DEBUG, handlers=[
+    logging.FileHandler(f'/home/A00806415/DCC/ModelCompression/data/ModelCompression_DDQN_{dataset_name}.log', 'w+')],
+    format='%(asctime)s -%(levelname)s - %(funcName)s -  %(message)s')
+logging.root.setLevel(logging.DEBUG)
+
+log = logging.getLogger('tensorflow')
+log.setLevel(logging.ERROR)
+
+
+exploration_filename = data_path+'/training_exploration_DDQN.csv'
+test_filename = data_path+'/test_evaluate_DDQN.csv'
+agents_path = data_path+'/checkpoints/{}_my_checkpoint_DuelingDDQN_'.format(dataset_name)
+
 current_state = 'layer_input'
 next_state = 'layer_output'
 
-eval_n_samples = 10
+epsilon_start_value = 0.9
+epsilon_decay = 0.995
+min_epsilon = 0.1
+replay_buffer_size = 10 ** 6
+
+verbose = 0
+rl_iterations = 1000
+eval_n_samples = 5
 n_samples_mode = 256
-training_batch_size = 512
+batch_size_per_replica = 256
+tuning_batch_size = batch_size_per_replica * strategy.num_replicas_in_sync
+rl_batch_size = tuning_batch_size
+tuning_epochs = 30
 
-layer_name_list = ['conv2d_1', 'dense_0', 'dense_1']
+layer_name_list = ['conv2d_1',  'dense', 'dense_1']
 
-generate_new_sample = play_and_record_adadeep
-evaluate_agent = evaluate_adadeep
-reward_func = reward_functions.reward_funcv1
+def create_model():
+    checkpoint_path = f"./data/models/lenet_{dataset_name}/cp.ckpt"
+    optimizer = tf.keras.optimizers.Adam(1e-5)
+    loss_object = tf.keras.losses.SparseCategoricalCrossentropy()
+    train_metric = tf.keras.metrics.SparseCategoricalAccuracy()
+    input = tf.keras.layers.Input((28,28,1))
+    x = tf.keras.layers.Conv2D(6, (5,5), padding='SAME', activation='sigmoid', name='conv2d')(input)
+    x = tf.keras.layers.AveragePooling2D((2,2), strides=2, name='avg_pool_1')(x)
+    x = tf.keras.layers.Conv2D(16, (5,5), padding='VALID', activation='sigmoid', name='conv2d_1')(x)
+    x = tf.keras.layers.AveragePooling2D((2,2), strides=2, name='avg_pool_2')(x)
+    x = tf.keras.layers.Flatten(name='flatten')(x)
+    x = tf.keras.layers.Dense(120, activation='sigmoid', name='dense')(x)
+    x = tf.keras.layers.Dense(84, activation='sigmoid', name='dense_1')(x)
+    x = tf.keras.layers.Dense(10, activation='softmax', name='predictions')(x)
 
-logging.basicConfig(level=logging.DEBUG, handlers=[
-    logging.FileHandler('/home/A00806415/DCC/ModelCompression/data/ModelCompression.log', 'w+')],
-    # logging.StreamHandler()],
-    format='%(asctime)s -%(levelname)s - %(funcName)s -  %(message)s')
+    model = tf.keras.Model(input, x, name='LeNet')
+    model.compile(optimizer=optimizer, loss=loss_object,
+                    metrics=[train_metric])
+
+    try:
+        model.load_weights(checkpoint_path).expect_partial()
+    except:
+        cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_path, monitor='val_loss', save_best_only=True,
+                                                 save_weights_only=True,
+                                                 verbose=1)
+        model.fit(train_ds,
+          epochs=3000,
+          validation_data=valid_ds,
+          callbacks=[cp_callback])
+
+    return model       
+
+def dataset_preprocessing(img, label):
+    img = tf.cast(img, tf.float32)
+    img = img/255.0
+    return img, label
+
+def load_dataset(batch_size=128):
+    splits, info = tfds.load(dataset_name, as_supervised=True, with_info=True, shuffle_files=True, 
+                                split=['train[:80%]', 'train[80%:]','test'])
+
+    (train_examples, validation_examples, test_examples) = splits
+    num_examples = info.splits['train'].num_examples
+
+    num_classes = info.features['label'].num_classes
+    input_shape = info.features['image'].shape
+
+    input_shape = (28,28,1)
+
+    train_ds = train_examples.map(dataset_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).shuffle(buffer_size=1000, reshuffle_each_iteration=True).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+    valid_ds = validation_examples.map(dataset_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+    test_ds = test_examples.map(dataset_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+
+    return train_ds, valid_ds, test_ds, input_shape, num_classes
+
+train_ds, valid_ds, test_ds, input_shape, _ = load_dataset(tuning_batch_size)
 
 
-
-env = make_env(dataset, layer_name_list, current_state, next_state)
+input_shape = (28,28,1)
+env = make_env_imagenet(
+        create_model=create_model, 
+        train_ds=train_ds, 
+        valid_ds=valid_ds, 
+        test_ds=test_ds, 
+        input_shape=input_shape, 
+        layer_name_list=layer_name_list, 
+        num_feature_maps=n_samples_mode, 
+        tuning_batch_size=tuning_batch_size, 
+        tuning_epochs=tuning_epochs, 
+        verbose=verbose, 
+        tuning_mode='layer', 
+        current_state_source=current_state, 
+        next_state_source=next_state, 
+        strategy=strategy, 
+        model_path=data_path)
+        
 env.model.summary()
 
-fc_state_dim = (1,)
-fc_n_actions = len(env.dense_compressors)
-conv_state_dim = list(env.get_state('current_state').shape)[1:]
-print(conv_state_dim)
-conv_n_actions = len(env.conv_compressors)
+conv_shape, dense_shape = env.observation_space()
+conv_n_actions, fc_n_actions = env.action_space()
 
-fc_agent = DQNAgent("dqn_agent_fc", fc_state_dim,
-                    fc_n_actions, epsilon=0.9, layer_type='fc')
-fc_target_network = DQNAgent(
-    "target_network_fc", fc_state_dim, fc_n_actions, layer_type='fc')
-
-
-conv_agent = DQNAgent("dqn_agent_conv", conv_state_dim,
-                      conv_n_actions, epsilon=0.9, layer_type='cnn')
-conv_target_network = DQNAgent(
-    "target_network_conv", conv_state_dim, conv_n_actions, layer_type='cnn')
-
-
-try:
-    conv_target_network.model.load_weights(
-        './data/checkpoints/{}_my_checkpoint_conv'.format(dataset))
-    fc_target_network.model.load_weights(
-        './data/checkpoints/{}_my_checkpoint_fc'.format(dataset))
-except:
-    print('Failed to find pretrained models for the RL agents.')
-    pass
-
+print(conv_shape, dense_shape)
 
 def load_weigths_into_target_network(agent, target_network):
     """ assign target_network.weights variables to their respective agent.weights values. """
@@ -78,20 +164,88 @@ def load_weigths_into_target_network(agent, target_network):
             agent.model.layers[i].get_weights())
 
 
-load_weigths_into_target_network(fc_agent, fc_target_network)
-load_weigths_into_target_network(conv_agent, conv_target_network)
-
-for w, w2 in zip(fc_agent.weights, fc_target_network.weights):
-    tf.assert_equal(w, w2)
-for w, w2 in zip(conv_agent.weights, conv_target_network.weights):
-    tf.assert_equal(w, w2)
-
-print("It works!")
 
 
-def moving_average(x, span=100, **kw):
-    return pd.DataFrame({'x': np.asarray(x)}).x.ewm(span=span, **kw).mean().values
+with strategy.scope():
+    
+    fc_agent = DuelingDQNAgent("dqn_agent_fc", dense_shape,
+                        fc_n_actions, epsilon=epsilon_start_value, layer_type='fc')
+    fc_target_network = DuelingDQNAgent(
+        "target_network_fc", dense_shape, fc_n_actions, layer_type='fc')
 
+    fc_agent.model.summary()
+
+    conv_agent = DuelingDQNAgent("dqn_agent_conv", conv_shape,
+                        conv_n_actions, epsilon=epsilon_start_value, layer_type='cnn')
+    conv_target_network = DuelingDQNAgent(
+        "target_network_conv", conv_shape, conv_n_actions, layer_type='cnn')
+
+
+    try:
+        conv_target_network.model.load_weights(
+            agents_path+'conv_agent')
+        fc_target_network.model.load_weights(
+            agents_path+'fc_agent'.format(dataset_name))
+    except:
+        print('Failed to find pretrained models for the RL agents.')
+        pass
+
+    load_weigths_into_target_network(fc_agent, fc_target_network)
+    load_weigths_into_target_network(conv_agent, conv_target_network)
+
+    for w, w2 in zip(fc_agent.model.trainable_weights, fc_target_network.model.trainable_weights):
+        tf.assert_equal(w, w2)
+    for w, w2 in zip(conv_agent.model.trainable_weights, conv_target_network.model.trainable_weights):
+        tf.assert_equal(w, w2)
+
+    print("It works!")
+
+    optimizer_conv = tf.keras.optimizers.Adam()
+    optimizer_fc = tf.keras.optimizers.Adam()
+
+
+# def training_loop(state, action, rewards, next_state, done, agent, target_agent, loss_optimizer, n_actions, gamma=0.01):
+#     state = tf.cast(state.to_tensor(), tf.float32)
+#     action = tf.cast(action, tf.int32)
+#     next_state = tf.cast(next_state.to_tensor(), tf.float32)
+
+#     rewards = tf.cast(rewards, tf.float32)
+#     done = 1 - tf.cast(done, tf.float32)
+
+#     reference_qvalues = rewards + gamma * \
+#         tf.reduce_max(target_agent.get_qvalues(next_state), axis=1)
+#     reference_qvalues = reference_qvalues * (1 - done) - done
+
+#     masks = tf.one_hot(action, n_actions)
+#     with tf.GradientTape() as tape:
+#         q_values = agent.get_qvalues(state)
+#         q_action = tf.reduce_sum(tf.multiply(q_values, masks), axis=1)
+#         td_loss = tf.reduce_mean((q_action - reference_qvalues) ** 2)
+
+#     gradients = tape.gradient(td_loss, agent.model.trainable_weights)
+#     loss_optimizer.apply_gradients(zip(gradients, agent.model.trainable_weights))
+#     return td_loss
+
+# @tf.function
+def training_loop(state, action, rewards, next_state, done, agent, target_agent, loss_optimizer, n_actions, gamma=0.01):
+    # state = tf.cast(state.to_tensor(), tf.float32)
+    # action = tf.cast(action, tf.int32)
+    # next_state = tf.cast(next_state.to_tensor(), tf.float32)
+    # rewards = tf.cast(rewards, tf.float32)
+    agent_best_actions = tf.cast(tf.math.argmax(agent.get_qvalues(next_state), axis=1), tf.int32)
+    indices = tf.stack([tf.range(state.shape[0]), agent_best_actions], axis=1)
+    target_agent_qvalues = tf.gather_nd(target_agent.get_qvalues(next_state), indices=indices)
+    reference_qvalues = rewards + gamma * target_agent_qvalues * (1.0 - done)
+
+    masks = tf.one_hot(action, n_actions)
+    with tf.GradientTape() as tape:
+        q_values = agent.get_qvalues(state)
+        selected_action_qvalues = tf.reduce_sum(tf.multiply(q_values, masks), axis=1)
+        td_loss = tf.reduce_mean((reference_qvalues - selected_action_qvalues) ** 2)
+
+    gradients = tape.gradient(td_loss, agent.model.trainable_weights)
+    loss_optimizer.apply_gradients(zip(gradients, agent.model.trainable_weights))
+    return td_loss
 
 mean_weights_history = []
 mean_acc_history = []
@@ -99,128 +253,79 @@ mean_rw_history = []
 td_loss_history_conv = []
 td_loss_history_fc = []
 
-
 def sample_batch(exp_replay, batch_size):
     obs_batch, act_batch, reward_batch, next_obs_batch, is_done_batch = exp_replay.sample(
         batch_size)
     return {
-        'state': obs_batch,
-        'action': act_batch,
-        'rewards': reward_batch,
-        'next_state': next_obs_batch,
-        'done': is_done_batch,
+        'state': tf.cast(obs_batch.to_tensor(), tf.float32),
+        'action': tf.cast(act_batch, tf.int32),
+        'rewards': tf.cast(reward_batch, tf.float32),
+        'next_state': tf.cast(next_obs_batch.to_tensor(), tf.float32),
+        'done': tf.cast(is_done_batch, tf.float32),
     }
+    
 
+fc_exp_replay = ReplayBuffer(replay_buffer_size)
+conv_exp_replay = ReplayBuffer(replay_buffer_size)
 
-# @tf.function
-def training_loop(state, action, rewards, next_state, done, agent, target_agent, loss_optimizer, n_actions, gamma=0.01):
-    state = tf.cast(state, tf.float32)
-    action = tf.cast(action, tf.int32)
-    next_state = tf.cast(next_state, tf.float32)
+print('There are {} conv and {} fc instances.'.format(len(conv_exp_replay), len(fc_exp_replay)))
+play_and_record(conv_agent, fc_agent, env, conv_exp_replay, fc_exp_replay, run_id=run_id, test_number=0, dataset_name=dataset_name,save_name=exploration_filename, n_games=5)
 
-    rewards = tf.cast(rewards, tf.float32)
-    done = 1 - tf.cast(done, tf.float32)
+print('There are {} conv and {} fc instances.'.format(len(conv_exp_replay), len(fc_exp_replay)))
 
-    reference_qvalues = rewards + gamma * \
-        tf.reduce_max(target_agent.get_qvalues(next_state), axis=1)
-    reference_qvalues = reference_qvalues * (1 - done) - done
+with tqdm(total=rl_iterations,
+        bar_format="{l_bar}{bar}|{n}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}, Epsilon: {postfix[0]:.4f} Last 3 RW: {postfix[1][0]:.2f}, {postfix[1][1]:.2f} & {postfix[1][2]:.2f} W: {postfix[2][0]:.2f}, {postfix[2][1]:.2f} & {postfix[2][2]:.2f} Acc: {postfix[3][0]:.2f}, {postfix[3][1]:.2f} & {postfix[3][2]:.2f}] Replay: conv:{postfix[4]}/fc:{postfix[5]}.",
+        postfix=[conv_agent.epsilon, dict({0: 0, 1: 0, 2: 0}), dict({0: 0, 1: 0, 2: 0}), dict({0: 0, 1: 0, 2: 0}), len(conv_exp_replay), len(fc_exp_replay)]) as t:
+    for i in range(rl_iterations):
+        # generate new sample
+        play_and_record(conv_agent, fc_agent, env, conv_exp_replay, fc_exp_replay, run_id=run_id, test_number=i, dataset_name=dataset_name,save_name=exploration_filename,n_games=1)
 
-    masks = tf.one_hot(action, n_actions)
-    with tf.GradientTape() as tape:
-        q_values = agent.get_qvalues(state)
-        q_action = tf.reduce_sum(tf.multiply(q_values, masks), axis=1)
-        td_loss = tf.reduce_mean((q_action - reference_qvalues) ** 2)
-
-    gradients = tape.gradient(td_loss, agent.weights)
-    loss_optimizer.apply_gradients(zip(gradients, agent.weights))
-    return td_loss
-
-
-fc_agent.epsilon = 0.999
-conv_agent.epsilon = 0.999
-epsilon_decay = 0.999
-min_epsilon = 0.1
-optimizer = tf.keras.optimizers.Adam(1e-5)
-iterations = 1000
-
-fc_exp_replay = ReplayBuffer(10 ** 5)
-conv_exp_replay = ReplayBuffer(10 ** 5)
-
-try:
-    fc_exp_replay.load(
-        './data/{}_adadeep_fc_replay_{}_{}.pkl'.format(dataset, current_state, next_state))
-    conv_exp_replay.load(
-        './data/{}_adadeep_conv_replay_{}_{}.pkl'.format(dataset, current_state, next_state))
-    print('Succesfully loaded agent weights.')
-except FileNotFoundError:
-    pass
-
-print('There are {} conv and {} fc instances.'.format(
-    len(conv_exp_replay), len(fc_exp_replay)))
-generate_new_sample(conv_agent, fc_agent, env, conv_exp_replay,
-                        fc_exp_replay, dataset, current_state, next_state, n_samples_mode=n_samples_mode,reward_func=reward_func, n_steps=1, debug=True)
-
-print('There are {} conv and {} fc instances.'.format(
-    len(conv_exp_replay), len(fc_exp_replay)))
-
-
-with tqdm(total=iterations,
-          bar_format="{l_bar}{bar}|{n}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}, Epsilon: {postfix[0]:.4f} Last 3 RW: {postfix[1][0]:.2f}, {postfix[1][1]:.2f} & {postfix[1][2]:.2f} W: {postfix[2][0]:.2f}, {postfix[2][1]:.2f} & {postfix[2][2]:.2f} Acc: {postfix[3][0]:.2f}, {postfix[3][1]:.2f} & {postfix[3][2]:.2f}]",
-          postfix=[conv_agent.epsilon, dict({0: 0, 1: 0, 2: 0}), dict({0: 0, 1: 0, 2: 0}), dict({0: 0, 1: 0, 2: 0})]) as t:
-    for i in range(iterations):
-        # play
-        generate_new_sample(conv_agent, fc_agent, env, conv_exp_replay,
-                                fc_exp_replay, dataset, current_state, next_state, n_samples_mode=n_samples_mode,reward_func=reward_func, debug=False)
 
         # train fc
-        batch_data = sample_batch(conv_exp_replay, batch_size=training_batch_size)
+        batch_data = sample_batch(conv_exp_replay, batch_size=rl_batch_size)
         batch_data['agent'] = conv_agent
         batch_data['target_agent'] = conv_target_network
-        batch_data['loss_optimizer'] = optimizer
+        batch_data['loss_optimizer'] = optimizer_conv
         batch_data['n_actions'] = conv_n_actions
         conv_loss_t = training_loop(**batch_data)
         td_loss_history_conv.append(conv_loss_t)
 
         # train
-        batch_data = sample_batch(fc_exp_replay, batch_size=training_batch_size)
+        batch_data = sample_batch(fc_exp_replay, batch_size=rl_batch_size)
         batch_data['agent'] = fc_agent
         batch_data['target_agent'] = fc_target_network
-        batch_data['loss_optimizer'] = optimizer
+        batch_data['loss_optimizer'] = optimizer_fc
         batch_data['n_actions'] = fc_n_actions
         fc_loss_t = training_loop(**batch_data)
         td_loss_history_fc.append(fc_loss_t)
 
+
+        conv_agent.epsilon = max(conv_agent.epsilon * epsilon_decay, min_epsilon)
+        fc_agent.epsilon = max(fc_agent.epsilon * epsilon_decay, min_epsilon)
+        t.postfix[0] = conv_agent.epsilon
+        t.postfix[5]= len(fc_exp_replay)
+        t.postfix[4]= len(conv_exp_replay)
         # adjust agent parameters
         if i % 10 == 0:
             load_weigths_into_target_network(conv_agent, conv_target_network)
             conv_target_network.model.save_weights(
-                './data/checkpoints/{}_my_checkpoint_conv'.format(dataset))
-            conv_agent.epsilon = max(conv_agent.epsilon * epsilon_decay, min_epsilon)
-            t.postfix[0] = conv_agent.epsilon
-
+                data_path+'/checkpoints/{}_my_checkpoint_conv_agent'.format(dataset_name))
+            
+            
             load_weigths_into_target_network(fc_agent, fc_target_network)
             fc_target_network.model.save_weights(
-                './data/checkpoints/{}_my_checkpoint_fc'.format(dataset))
-            fc_agent.epsilon = max(fc_agent.epsilon * epsilon_decay, min_epsilon)
+                    data_path+'/checkpoints/{}_my_checkpoint_fc_agent'.format(dataset_name))
+            
+            
 
-            rw, acc, weights = evaluate_agent(
-                make_env(dataset, layer_name_list, current_state, next_state), conv_agent, fc_agent, n_games=eval_n_samples, n_samples_mode=n_samples_mode ,reward_func=reward_func)
+            rw, acc, weights = evaluate_agents(env, conv_agent, fc_agent,run_id=run_id,test_number=i//10, dataset_name=dataset_name,save_name=test_filename, n_games=eval_n_samples)            
+            
             mean_rw_history.append(rw)
             mean_acc_history.append(acc)
             mean_weights_history.append(weights)
 
-            with open('./data/numpy results/{}_{}_rw_history_{}_mode_{}.npy'.format(dataset, eventid, eval_n_samples, n_samples_mode), 'wb') as f:
-                np.save(f, np.array(mean_rw_history))
-            with open('./data/numpy results/{}_{}_acc_history_{}_mode_{}.npy'.format(dataset, eventid, eval_n_samples, n_samples_mode), 'wb') as f:
-                np.save(f, np.array(mean_acc_history))
-            with open('./data/numpy results/{}_{}_weights_history_{}_mode_{}.npy'.format(dataset, eventid, eval_n_samples, n_samples_mode), 'wb') as f:
-                np.save(f, np.array(mean_weights_history))
-            with open('./data/numpy results/{}_{}_td_loss_fc_{}_mode_{}.npy'.format(dataset, eventid, eval_n_samples, n_samples_mode), 'wb') as f:
-                np.save(f, np.array(td_loss_history_fc))
-            with open('./data/numpy results/{}_{}_td_loss_conv_{}_mode_{}.npy'.format(dataset, eventid, eval_n_samples, n_samples_mode), 'wb') as f:
-                np.save(f, np.array(td_loss_history_conv))
-
             t.postfix[1][2] = mean_rw_history[-1]
+            
             try:
                 t.postfix[1][1] = mean_rw_history[-2]
             except IndexError:
@@ -249,35 +354,26 @@ with tqdm(total=iterations,
                 t.postfix[3][0] = mean_acc_history[-3]
             except IndexError:
                 t.postfix[3][0] = 0
+
+
+
+            plt.clf()
+            fig = plt.figure()
+            ax1 = fig.add_subplot(131)
+            ax2 = fig.add_subplot(132)
+            ax3 = fig.add_subplot(133)
+            ax1.title.set_text('Accuracy')
+            ax1.plot(mean_acc_history)
+            ax2.title.set_text('Weights(%)')
+            ax2.plot(mean_weights_history)
+            ax3.title.set_text('Reward')
+            ax3.plot(mean_rw_history)
+            plt.savefig('./data/figures/test_stats.png')
+
         t.update()
-
-        if i % 10 == 0:
-            clear_output(True)
-            fig = plt.figure(figsize=(16, 12))
-            plt.subplot(1, 4, 1)
-            plt.title("Mean reward per game")
-            plt.plot(mean_rw_history)
-            plt.grid()
-
-            assert not np.isnan(td_loss_history_fc).any(
-            ) and not np.isnan(td_loss_history_conv).any()
-
-            plt.subplot(1, 4, 2)
-            plt.title("TD loss history (moving average)")
-            plt.plot(moving_average(
-                np.array(td_loss_history_conv), span=10, min_periods=10))
-            plt.plot(moving_average(
-                np.array(td_loss_history_fc), span=10, min_periods=10))
-            plt.grid()
-
-            plt.subplot(1, 4, 3)
-            plt.title("Weights history")
-            plt.plot(mean_weights_history)
-            plt.grid()
-
-            plt.subplot(1, 4, 4)
-            plt.title("Acc history")
-            plt.plot(mean_acc_history)
-            plt.grid()
-            plt.savefig('./data/stats/{}_{}_stats_plot_{}_mode_{}.png'.format('_'.join(dataset), eventid, eval_n_samples, n_samples_mode))
-            plt.close(fig)
+        
+        plt.clf()
+        plt.plot(td_loss_history_conv, color='r')
+        plt.plot(td_loss_history_fc, color='b')
+        plt.savefig('./data/figures/td_loss.png')
+   

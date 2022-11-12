@@ -32,75 +32,59 @@ class AddSparseConnectionsCallback(tf.keras.callbacks.Callback):
             self.logger.debug(f'Number of activated connections {np.sum(connections)} of {connections.shape[0]}.')
             self.model.layers[layer_idx].set_connections(connections.tolist())
 
-class EarlyStoppingReward(tf.keras.callbacks.Callback):
+class RestoreBestWeights(tf.keras.callbacks.Callback):
 
-    def __init__(self, weights_before, baseline_acc=0.7, min_delta=0, patience=2, start_epoch=10 ,verbose=0, restore_best_weights=True):
+    def __init__(self, acc_before, weights_before, verbose=0):
         """
         
         """
-        self.patience = patience
         self.verbose = verbose
         self.weights_after = None
         self.weights_before = weights_before
-        self.start_epoch = start_epoch
-        self.baseline_acc = baseline_acc
-        self.min_delta = abs(min_delta)
-        self.wait = 0
-        self.stopped_epoch = 0
-        self.restore_best_weights = restore_best_weights
+        self.acc_before = acc_before
         self.best_weights = None
         self.logger = logging.getLogger(__name__)
         
         self.monitor_op = np.greater
-        self.min_delta *= 1
        
 
     def on_train_begin(self, logs=None):
         # Allow instances to be re-used
-        self.wait = 0
-        self.stopped_epoch = 0
-        self.best_acc = -np.Inf
-        self.best_reward = -np.Inf
-        self.best_weights = None
+        self.best_acc = self.acc_before
+        self.best_weights = self.model.get_weights()
+        weights_after = utils.calculate_model_weights(self.model)
+        self.best_reward = 1 - (weights_after / self.weights_before) + self.acc_before - 0.9 * self.acc_before
         self.best_epoch = 0
             
 
     def on_epoch_end(self, epoch, logs=None):
         current_acc, current_reward = self.get_monitor_values(logs)
 
-        if self.restore_best_weights and self.best_weights is None:
+        if self.best_weights is None:
             # Restore the weights after first epoch if no progress is ever made.
             self.best_weights = self.model.get_weights()
 
-        self.wait += 1
-        if self._is_improvement(current_acc, self.best_acc):
-            self.best_acc = current_acc
-            self.best_reward = current_reward
-            self.best_epoch = epoch
-            if self.restore_best_weights:
-                self.best_weights = self.model.get_weights()
-            # Only restart wait if we beat both the baseline and our previous best.
-            if self._is_improvement(current_acc, self.baseline_acc):
-                self.wait = 0
-                self.logger.info(f'Resetting wait. Callback waiting another {self.patience} epochs.')
-
-        if epoch < self.start_epoch:
-            self.wait = 0
-
-        # Only check after the first epoch.
-        if self.wait >= self.patience and epoch > 0:
-            self.stopped_epoch = epoch
+        losses = [logs.get('loss'), logs.get('val_loss')]
+        if np.isnan(losses).any():
+            self.logger.warning('Loss is NaN, reverting weights to preven NaN.')
+            self.model.set_weights(self.best_weights)
             self.model.stop_training = True
-            if self.restore_best_weights and self.best_weights is not None:
-                if self.verbose > 0:
-                    self.logger.info(
-                        f'Restoring model weights from the end of the best epoch: {self.best_epoch + 1}.')
-                    self.model.set_weights(self.best_weights)
+        else:
+            if self._is_improvement(current_acc, self.best_acc):
+                    self.logger.info(f'Saving weights due to {current_acc} being better than {self.best_acc}.')
+                    self.best_acc = current_acc
+                    self.best_reward = current_reward
+                    self.best_epoch = epoch
+                    self.best_weights = self.model.get_weights()
 
+        if current_acc > self.acc_before:
+            self.model.stop_training = True
+            
     def on_train_end(self, logs=None):
-        if self.stopped_epoch > 0 and self.verbose > 0:
+        if self.verbose > 0:
             self.logger.info(
-                f'Epoch {self.stopped_epoch + 1}: early stopping with {self.best_acc} accuracy.')
+                f'Restoring weights of epoch {self.best_epoch} due to achieving {self.best_acc} val accuracy and {self.best_reward} reward.')
+        self.model.set_weights(self.best_weights)
 
 
     def get_monitor_values(self, logs):
@@ -109,10 +93,10 @@ class EarlyStoppingReward(tf.keras.callbacks.Callback):
         acc_after = logs.get('val_sparse_categorical_accuracy')
         weights_after = utils.calculate_model_weights(self.model)
         self.logger.info(f'Model has {acc_after} accuracy, {weights_after} weights.')
-        reward = 1 - (weights_after / self.weights_before) + acc_after
+        reward = 1 - (weights_after / self.weights_before) + acc_after - 0.9 * self.acc_before
         self.logger.info(f'Reward is {reward}.')
 
         return acc_after, reward
 
     def _is_improvement(self, monitor_value, reference_value):
-        return self.monitor_op(monitor_value - self.min_delta, reference_value)
+        return self.monitor_op(monitor_value, reference_value)

@@ -1,6 +1,7 @@
 import tensorflow as tf
 
 
+@tf.keras.utils.register_keras_serializable()
 class SparseWeights(tf.keras.constraints.Constraint):
     __doc__ = '\n    Contraint that sets to zero all weights below a threshold.\n    '
 
@@ -12,7 +13,8 @@ class SparseWeights(tf.keras.constraints.Constraint):
         below_threshold = tf.abs(weights) < self.min_value
         new_weights = tf.where(below_threshold, 0.0, weights)
         return new_weights
-        
+
+@tf.keras.utils.register_keras_serializable()  
 class kNonZeroes(tf.keras.constraints.Constraint):
     __doc__ = '\n    Contraint that does not set to zero the top K values per unit.\n    '
 

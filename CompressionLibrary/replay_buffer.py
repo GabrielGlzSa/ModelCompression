@@ -1,5 +1,6 @@
 import numpy as np
 import pickle
+import tensorflow as tf
 
 class ReplayBuffer(object):
     def __init__(self, size):
@@ -55,8 +56,8 @@ class ReplayBuffer(object):
             s_next.append(sn_temp)
             done.append(done_temp)
 
-        return (np.array(s),
+        return (tf.ragged.constant(s),#np.array(s, dtype=np.object),
                 np.array(a),
                 np.array(r),
-                np.array(s_next),
+                tf.ragged.constant(s_next),#np.array(s_next, dtype=np.object),
                 np.array(done))

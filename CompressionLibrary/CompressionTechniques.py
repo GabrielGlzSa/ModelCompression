@@ -74,7 +74,6 @@ class ModelCompression:
         pass
 
     def replace_layer(self, new_layer, layer_name):
-
         inputs = tf.keras.layers.Input(shape=self.input_shape)
         if isinstance(self.model.layers[0], tf.keras.layers.InputLayer):
             x = self.model.layers[1](inputs)
@@ -146,19 +145,33 @@ class DeepCompression(ModelCompression):
         self.target_layer_type = 'dense'
 
     def get_new_layer(self, old_layer):
-        weights = old_layer.get_weights()
-        tf_weights = tf.constant(weights[0])
+        weights, bias = old_layer.get_weights()
+        config = old_layer.get_config()
+        units = config['units']
+        activation = config['activation']
         # Get weights that are below threshold.
-        below_threshold = tf.abs(tf_weights) < self.threshold
+        below_threshold = tf.abs(weights) < self.threshold
         # Replace with 0 all weights below threshold.
-        new_weights = tf.where(below_threshold, 0.0, tf_weights)
-        old_layer.set_weights([new_weights, weights[1]])
+        new_weights = tf.where(below_threshold, 0.0, weights)
+
         num_zeroes = tf.math.count_nonzero(tf.abs(new_weights[0]) == 0.0).numpy()
         weights_before = np.sum([K.count_params(w) for w in old_layer.trainable_weights])
         weights_after = weights_before - num_zeroes
-        old_layer._name = old_layer.name + '/DeepComp'
 
-        return old_layer, old_layer.name, weights_before, weights_after
+        new_layer = tf.keras.layers.Dense(units=units,
+                  activation=activation,
+                  name=old_layer.name + '/DeepComp',
+                  kernel_constraint=SparseWeights(self.threshold))
+
+        new_layer(old_layer.input)
+
+        new_layer.set_weights([new_weights, bias])
+        
+
+        self.logger.debug(f'Replaced layer was using {weights_before} weights.')
+        self.logger.debug(f'DeepComp  is using {weights_after} weights.')
+
+        return new_layer, new_layer.name, weights_before, weights_after
 
 class ReplaceDenseWithGlobalAvgPool(ModelCompression):
     __doc__ = '\n    Compression technique that replaces all dense and flatten layers\n    between the last convolutional layer and the softmax layer with a GlobalAveragePooling2D layer.\n    '
@@ -167,13 +180,25 @@ class ReplaceDenseWithGlobalAvgPool(ModelCompression):
         (super(ReplaceDenseWithGlobalAvgPool, self).__init__)(**kwargs)
         self.target_layer_type = 'dense'
 
-    def replace_layer(self, new_layer, idx):
+    def replace_layer(self, new_layer, layer_name):
         """
-        New layer is a list that has Global Avg Pooling and Output layer. The index is not required for
-        this particular case. 
+        New layer is a list that has Global Avg Pooling and Output layer. 
         """
         flatten_idx = self.find_layer('flatten')
-        return tf.keras.Sequential(self.model.layers[:flatten_idx] + new_layer)
+        inputs = tf.keras.layers.Input(shape=self.input_shape)
+        if isinstance(self.model.layers[0], tf.keras.layers.InputLayer):
+            x = self.model.layers[1](inputs)
+            start = 2
+        else:
+            x = self.model.layers[0](inputs)
+            start = 1
+        for layer in self.model.layers[start:flatten_idx]:
+            x = layer(x)
+
+        for layer in new_layer:
+            x = layer(x)
+            
+        return tf.keras.Model(inputs, x)
 
 
     def get_new_layer(self, old_layer):
@@ -204,7 +229,7 @@ class ReplaceDenseWithGlobalAvgPool(ModelCompression):
         # Number of weights is weights + bias
         weights_after =  num_classes * filters + num_classes
 
-        return [global_avg_pooling, new_softmax_layer], new_layer_name, weights_before, weights_after,
+        return [global_avg_pooling, new_softmax_layer], new_layer_name, weights_before, weights_after
 
 
 class InsertDenseSVD(ModelCompression):
@@ -214,14 +239,24 @@ class InsertDenseSVD(ModelCompression):
         (super(InsertDenseSVD, self).__init__)(**kwargs)
         self.target_layer_type = 'dense'
 
-    def get_new_layer(self, old_layer):
+    def get_new_layer(self, old_layer, percentage=None):
         weights, bias = old_layer.get_weights()
         _ , units = weights.shape
-        hidden_units = units//12
+        if not percentage:
+            hidden_units = units//12
+        else:
+            hidden_units = int(units*percentage)
+        
         activation = old_layer.get_config()['activation']
 
-        weights = tf.constant(weights, dtype='float32')
-        s, u, v = tf.linalg.svd(weights, full_matrices=True)
+        self.logger.debug(f'SVD is being calculated for shape {weights.shape} using {hidden_units} singular values.')
+        try:
+            s, u, v = tf.linalg.svd(weights, full_matrices=True)
+        except Exception as e:
+            print(e)
+            with tf.device('/CPU:0'):
+                s, u, v = tf.linalg.svd(weights, full_matrices=True)
+                
         u = tf.slice(u, begin=[0, 0], size=[weights.shape[0], hidden_units])
         s = tf.slice(s, begin=[0], size=[hidden_units])
 
@@ -418,7 +453,13 @@ class MLPCompression(ModelCompression):
         weights = tf.reshape(kernel, shape=[-1, filters])
 
         hidden_units = filters //6
-        s, u, v = tf.linalg.svd(weights, full_matrices=True)
+        try:
+            s, u, v = tf.linalg.svd(weights, full_matrices=True)
+        except Exception as e:
+            print(e)
+            with tf.device('/CPU:0'):
+                s, u, v = tf.linalg.svd(weights, full_matrices=True)
+
         u = tf.slice(u, begin=[0, 0], size=[weights.shape[0], hidden_units])
         s = tf.slice(s, begin=[0], size=[hidden_units])
 
@@ -427,7 +468,7 @@ class MLPCompression(ModelCompression):
         n = tf.matmul(tf.linalg.diag(s), v)
         new_weights = tf.matmul(u, n)
         loss = tf.reduce_mean(tf.square(weights - new_weights))
-        print(f'New weights have MSE of {loss}.')
+        self.logger.info(f'New weights have MSE of {loss}.')
 
 
         new_layer = MLPConv(filters=filters, hidden_units=hidden_units, kernel_size=kernel_size, padding=padding,

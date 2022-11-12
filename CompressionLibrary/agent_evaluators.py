@@ -6,10 +6,11 @@ import numpy as np
 import gc
 from datetime import datetime
 import logging
+import sys
 
-def make_env_imagenet(create_model, train_ds, valid_ds, test_ds, input_shape, layer_name_list, num_feature_maps, tuning_batch_size, tuning_epochs, current_state_source='layer_input', next_state_source='layer_output', strategy=None, model_path='./data'):
- 
-    
+
+
+def make_env_imagenet(create_model, train_ds, valid_ds, test_ds, input_shape, layer_name_list, num_feature_maps, tuning_batch_size, tuning_epochs, verbose=0, tuning_mode='layer', current_state_source='layer_input', next_state_source='layer_output', strategy=None, model_path='./data'):
 
     w_comprs = ['InsertDenseSVD', 'InsertDenseSparse',
                 'DeepCompression'] 
@@ -40,12 +41,12 @@ def make_env_imagenet(create_model, train_ds, valid_ds, test_ds, input_shape, la
     env = ModelCompressionEnv(compressors_list, create_model, parameters,
                                       train_ds, valid_ds, test_ds,
                                       layer_name_list, input_shape, current_state_source=current_state_source, next_state_source=next_state_source, 
-                                      num_feature_maps=num_feature_maps, tuning_batch_size=tuning_batch_size, verbose=2, tuning_epochs=tuning_epochs,strategy=strategy, model_path=model_path)
+                                      num_feature_maps=num_feature_maps, tuning_batch_size=tuning_batch_size, verbose=verbose, tuning_mode=tuning_mode, tuning_epochs=tuning_epochs,strategy=strategy, model_path=model_path)
 
     return env
 
 
-def play_and_record(conv_agent, fc_agent, env, conv_replay, fc_replay, n_steps=1):
+def play_and_record(conv_agent, fc_agent, env, conv_replay, fc_replay, run_id, test_number, dataset_name, save_name, n_games=1):
     """
     Play the game for exactly n steps, record every (s,a,r,s', done) to replay buffer.
     Whenever game ends, add record with done=True and reset the game.
@@ -60,10 +61,15 @@ def play_and_record(conv_agent, fc_agent, env, conv_replay, fc_replay, n_steps=1
     # Play the game for n_steps as per instructions above
 
     logger = logging.getLogger(__name__)
-    data = []
     rewards = []
-    for it in range(n_steps):
+    try:
+        df_results = pd.read_csv(save_name)
+    except:
+        df_results = pd.DataFrame()
+
+    for it in range(n_games):
         start = datetime.now()
+        data = []
         for k in range(1, len(env.layer_name_list)+1):
             tf.keras.backend.clear_session()
             # Get the current layer name
@@ -76,14 +82,24 @@ def play_and_record(conv_agent, fc_agent, env, conv_replay, fc_replay, n_steps=1
             if isinstance(layer, tf.keras.layers.Conv2D):
                 # Calculate q values for batch of images
                 qvalues = conv_agent.get_qvalues(s).numpy()
+                if np.isnan(qvalues).any():
+                    logger.error('Qvalues have NaN.')
+                    sys.exit()
+                logger.debug(f'Q values for conv2d layer  are {qvalues}')
                 # Action is the mode of the action.
-                action = conv_agent.sample_actions_using_mode(qvalues)[0]
+                action = conv_agent.sample_actions_using_egreedy_mode(qvalues)[0]
+                logger.debug(f'E-Greedy action for conv2d layer is {action}')
             if isinstance(layer, tf.keras.layers.Dense):
                 was_conv = False
                 # Calculate q values for batch of images
                 qvalues = fc_agent.get_qvalues(s).numpy()
+                if np.isnan(qvalues).any():
+                    logger.error('Qvalues have NaN.')
+                    sys.exit()
+                logger.debug(f'Q values for dense layer are {qvalues}')
                 # Action is the mode of the action.
-                action = fc_agent.sample_actions_using_mode(qvalues)[0]
+                action = fc_agent.sample_actions_using_egreedy_mode(qvalues)[0]
+                logger.debug(f'E-Greedy action for dense layer is {action}')
 
             # Apply action
             new_s, r, done, info = env.step(action)
@@ -104,6 +120,17 @@ def play_and_record(conv_agent, fc_agent, env, conv_replay, fc_replay, n_steps=1
                 break
             gc.collect()
 
+        
+        actions = info['actions']
+        info['actions'] = ','.join(actions)
+        info['run_id'] = run_id
+        info['test_number'] = test_number
+        info['game_id'] = it
+        info['dataset'] = dataset_name
+        del info['layer_name']
+        new_row = pd.DataFrame(info, index=[0])
+        df_results = pd.concat([df_results, new_row], ignore_index=True)
+
         # Correct reward is the last value of r.
         rewards.append(r)
         end = datetime.now()
@@ -119,19 +146,20 @@ def play_and_record(conv_agent, fc_agent, env, conv_replay, fc_replay, n_steps=1
 
         del data
 
+    df_results.to_csv(save_name, index=False)
+
     return np.mean(rewards)
 
-def evaluate_agents(env, conv_agent, fc_agent, run_id, test_number, save_name, n_games=2):
+def evaluate_agents(env, conv_agent, fc_agent, run_id, test_number, dataset_name,save_name, n_games=2):
     """ Plays n_games full games. If greedy, picks actions as argmax(qvalues). Returns mean reward. """
     rewards = []
     acc = []
     weights = []
     infos = []
-    df_results = pd.DataFrame()
     logger = logging.getLogger(__name__)
     total_time = 0
     try:
-        df_results = pd.read_csv.to_csv(save_name)
+        df_results = pd.read_csv(save_name)
     except:
         df_results = pd.DataFrame()
 
@@ -145,9 +173,11 @@ def evaluate_agents(env, conv_agent, fc_agent, run_id, test_number, save_name, n
             if isinstance(layer, tf.keras.layers.Conv2D):
                 qvalues = conv_agent.get_qvalues(s).numpy()
                 action = conv_agent.sample_actions_using_mode(qvalues)[0]
+                logger.debug(f'Greedy action for conv2d layer is {action}')
             if isinstance(layer, tf.keras.layers.Dense):
                 qvalues = fc_agent.get_qvalues(s).numpy()
                 action = fc_agent.sample_actions_using_mode(qvalues)[0]
+                logger.debug(f'Greedy action for dense layer is {action}')
 
             _ , r, done, info = env.step(action)
             s = env.get_state('current_state')
@@ -159,21 +189,24 @@ def evaluate_agents(env, conv_agent, fc_agent, run_id, test_number, save_name, n
                 break
         game_time = (datetime.now() - start).total_seconds()
         actions = info['actions']
+        info['actions'] = ','.join(actions)
         info['run_id'] = run_id
         info['test_number'] = test_number
         info['game_id'] = game_id
+        info['dataset'] = dataset_name
+        del info['layer_name']
         logger.info(f'Actions taken in game {game_id} were  {actions} for a reward of {r}. Took {game_time} seconds.')
         total_time += game_time
+        new_row = pd.DataFrame(info, index=[0])
+        df_results = pd.concat([df_results, new_row], ignore_index=True)
 
-        df_results = df_results.append(info, ignore_index=True)
-        # Calculate reward using stats before and after compression
-        reward = df_results.iloc[-1]['reward']
+        reward = info['reward_all_steps']
 
         rewards.append(reward)
         acc.append(info['test_acc_after'])
         weights.append(info['weights_after'])
         infos.append(info['actions'])
-    df_results.to_csv(save_name, index=False)
+        df_results.to_csv(save_name, index=False)
     logger.info(f'Evaluation of {n_games} took {total_time} secs. An average of {total_time/n_games} secs per game.')
 
     return np.mean(rewards), np.mean(acc), np.mean(weights)

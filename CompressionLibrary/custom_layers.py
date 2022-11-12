@@ -141,9 +141,9 @@ class FireLayer(tf.keras.layers.Layer):
         x = tf.nn.conv2d(input=inputs, filters=self.kernel_squeeze, strides=self.strides, padding='SAME')
         o1x1 = tf.nn.conv2d(input=x, filters=self.kernel_expand1x1, strides=self.strides, padding='VALID')
         o3x3 = tf.nn.conv2d(input=x, filters=self.kernel_expand3x3, strides=self.strides, padding=self.padding)
+        if o1x1.shape != o3x3.shape:
+            o1x1 = tf.keras.layers.Cropping2D(cropping=2)(o1x1)
         x = tf.keras.layers.concatenate([o1x1, o3x3], axis=3)
-        if self.padding == 'VALID':
-            x = tf.keras.layers.Cropping2D(cropping=1)(x)
         x = tf.nn.bias_add(x, self.bias)
         return self.activation(x)
 
