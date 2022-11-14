@@ -50,7 +50,7 @@ class RestoreBestWeights(tf.keras.callbacks.Callback):
 
     def on_train_begin(self, logs=None):
         # Allow instances to be re-used
-        self.best_acc = self.acc_before
+        self.best_acc = - np.inf
         self.best_weights = self.model.get_weights()
         weights_after = utils.calculate_model_weights(self.model)
         self.best_reward = 1 - (weights_after / self.weights_before) + self.acc_before - 0.9 * self.acc_before

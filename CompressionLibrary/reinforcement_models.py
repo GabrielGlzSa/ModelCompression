@@ -1,10 +1,11 @@
 import tensorflow as tf
 from CompressionLibrary.custom_layers import ROIEmbedding, ROIEmbedding1D
+from CompressionLibrary.utils import OUActionNoise
 import numpy as np
-from utils import OUActionNoise
+
 
 class Agent:
-    def __init__(self, name, state_shape, n_actions, epsilon=0.0, layer_type='fc'):
+    def __init__(self, name, state_shape, n_actions, epsilon, layer_type='fc'):
         """Base class for an agent."""
         self.name = name
         self.epsilon = epsilon
@@ -17,14 +18,13 @@ class Agent:
 
     def sample_actions_exploration(self, qvalues):
         """Picks an action for exploration."""
-        epsilon = self.epsilon
         _, n_actions = qvalues.shape
         random_action = np.random.choice(n_actions, size=1)[0]
         best_actions = qvalues.argmax(axis=-1)
         actions, counts = np.unique(best_actions, return_counts=True)
         index = np.argmax(counts)
         best_action = actions[index]
-        action = np.random.choice([best_action, random_action], size=1, p=[1 - epsilon, epsilon])
+        action = np.random.choice([best_action, random_action], size=1, p=[1 - self.epsilon, self.epsilon])
         return action
 
     def sample_actions_greedy(self, qvalues):
@@ -39,7 +39,7 @@ class Agent:
 
 class RandomAgent(Agent):
     def __init__(self, **kwargs):
-        (super(Agent, self).__init__)(**kwargs)
+        (super(RandomAgent, self).__init__)(**kwargs)
 
     def model_creation(self, **kwargs):
         return None
@@ -57,11 +57,11 @@ class RandomAgent(Agent):
         random_action = np.random.choice(range(self.n_actions), size=1)
         return random_action
 
-class DQNAgent:
+class DQNAgent(Agent):
     def __init__(self, **kwargs):
-        (super(Agent, self).__init__)(**kwargs)
+        (super(DQNAgent, self).__init__)(**kwargs)
 
-    def model_creation(name, state_shape, n_actions, layer_type):
+    def model_creation(self,name, state_shape, n_actions, layer_type):
         if layer_type=='fc':
           input = tf.keras.layers.Input(shape=(None, 1))
           x = tf.keras.layers.Conv1D(64, kernel_size=3)(input)
@@ -78,11 +78,11 @@ class DQNAgent:
         model = tf.keras.Model(inputs=input, outputs=output, name=name)
         return model
 
-class DuelingDQNAgent:
+class DuelingDQNAgent(Agent):
     def __init__(self, **kwargs):
-        (super(Agent, self).__init__)(**kwargs)
+        (super(DuelingDQNAgent, self).__init__)(**kwargs)
 
-    def model_creation(name, state_shape, n_actions, layer_type):
+    def model_creation(self, name, state_shape, n_actions, layer_type):
         if layer_type=='fc':
           input = tf.keras.layers.Input(shape=(None, 1))
           x = tf.keras.layers.Conv1D(64, kernel_size=3)(input)

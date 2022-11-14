@@ -87,7 +87,7 @@ def play_and_record(conv_agent, fc_agent, env, conv_replay, fc_replay, run_id, t
                     sys.exit()
                 logger.debug(f'Q values for conv2d layer  are {qvalues}')
                 # Action is the mode of the action.
-                action = conv_agent.sample_actions_using_egreedy_mode(qvalues)[0]
+                action = conv_agent.sample_actions_exploration(qvalues)[0]
                 logger.debug(f'E-Greedy action for conv2d layer is {action}')
             if isinstance(layer, tf.keras.layers.Dense):
                 was_conv = False
@@ -98,7 +98,7 @@ def play_and_record(conv_agent, fc_agent, env, conv_replay, fc_replay, run_id, t
                     sys.exit()
                 logger.debug(f'Q values for dense layer are {qvalues}')
                 # Action is the mode of the action.
-                action = fc_agent.sample_actions_using_egreedy_mode(qvalues)[0]
+                action = fc_agent.sample_actions_exploration(qvalues)[0]
                 logger.debug(f'E-Greedy action for dense layer is {action}')
 
             # Apply action
@@ -172,11 +172,11 @@ def evaluate_agents(env, conv_agent, fc_agent, run_id, test_number, dataset_name
             layer = env.model.get_layer(next_layer_name)
             if isinstance(layer, tf.keras.layers.Conv2D):
                 qvalues = conv_agent.get_qvalues(s).numpy()
-                action = conv_agent.sample_actions_using_mode(qvalues)[0]
+                action = conv_agent.sample_actions_greedy(qvalues)[0]
                 logger.debug(f'Greedy action for conv2d layer is {action}')
             if isinstance(layer, tf.keras.layers.Dense):
                 qvalues = fc_agent.get_qvalues(s).numpy()
-                action = fc_agent.sample_actions_using_mode(qvalues)[0]
+                action = fc_agent.sample_actions_greedy(qvalues)[0]
                 logger.debug(f'Greedy action for dense layer is {action}')
 
             _ , r, done, info = env.step(action)

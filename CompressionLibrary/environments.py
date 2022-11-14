@@ -283,9 +283,15 @@ class ModelCompressionEnv():
 
         self.logger.debug(f'Using action {action} on layer {layer_name}.')
 
-        weights_before = self.weights_previous_it
-        if action == 0:
+        
+        #Do nothing when no action or when all the dense layers will be removed despite being compressed.
+        replace_dense_cond = compressors[action-1] == 'ReplaceDenseWithGlobalAvgPool' and self._layer_counter == len(self.layer_name_list)
+        if replace_dense_cond:
+            self.logger.debug('Setting action to 0 because ReplaceDense was not used in the first dense layer.')
+        if action == 0 or replace_dense_cond:
             val_acc_after = self.val_acc_before
+            val_loss = None
+            test_loss = None
             test_acc_after = self.test_acc_before
             self.logger.debug(f'Layer {layer_name} was not compressed.')
             self.chosen_actions.append('None')
@@ -293,6 +299,7 @@ class ModelCompressionEnv():
         else:
             action -= 1
             self.logger.debug(f'Compressing layer {layer_name} using {compressors[action]}')
+              
 
             # Save the sequence of actions.
             self.chosen_actions.append(compressors[action])
@@ -393,17 +400,21 @@ class ModelCompressionEnv():
         else:
             test_acc_after = self.test_acc_before
             val_acc_after = self.val_acc_before
-            weights_after = weights_before
+            weights_after = self.weights_previous_it
 
+        self.logger.info(f'Val loss: {val_loss}\t Val acc:{val_acc_after}')
+        self.logger.info(f'Test loss: {test_loss}\t Test acc:{test_acc_after}')
         weights_after = calculate_model_weights(self.model)
-        reward_step = 1 - (weights_after / weights_before) + test_acc_after - 0.9 * self.test_acc_before
+        reward_step = 1 - (weights_after / self.weights_previous_it) + test_acc_after - 0.9 * self.test_acc_before
         reward_all_steps = 1 - (weights_after / self.weights_before) + test_acc_after - 0.9 * self.test_acc_before
         self.weights_previous_it = weights_after
+
+        self.logger.info(f'Reward for step is {reward_step}. The reward for all steps is {reward_all_steps}.')
 
         info['test_acc_before'] = self.test_acc_before
         info['test_acc_after'] = test_acc_after
         info['weights_original'] = self.weights_before
-        info['weights_before_step'] = weights_before
+        info['weights_before_step'] = self.weights_previous_it
         info['weights_after'] = weights_after
         info['val_acc_before'] = self.val_acc_before
         info['val_acc_after'] = val_acc_after

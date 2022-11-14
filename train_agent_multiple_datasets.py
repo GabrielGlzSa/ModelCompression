@@ -58,7 +58,7 @@ current_state = 'layer_input'
 next_state = 'layer_output'
 
 epsilon_start_value = 0.9
-epsilon_decay = 0.995
+epsilon_decay = 0.997
 min_epsilon = 0.1
 replay_buffer_size = 10 ** 6
 
@@ -66,7 +66,7 @@ verbose = 0
 rl_iterations = 1000
 eval_n_samples = 5
 n_samples_mode = 256
-batch_size_per_replica = 128
+batch_size_per_replica = 256
 tuning_batch_size = batch_size_per_replica * strategy.num_replicas_in_sync
 rl_batch_size = tuning_batch_size
 tuning_epochs = 30
@@ -174,18 +174,17 @@ def load_weigths_into_target_network(agent, target_network):
 
 
 with strategy.scope():
-    
-    fc_agent = DuelingDQNAgent("dqn_agent_fc", dense_shape,
-                        fc_n_actions, epsilon=epsilon_start_value, layer_type='fc')
-    fc_target_network = DuelingDQNAgent(
-        "target_network_fc", dense_shape, fc_n_actions, layer_type='fc')
+    fc_agent = DuelingDQNAgent(name="ddqn_agent_fc", state_shape=dense_shape,
+                        n_actions=fc_n_actions, epsilon=epsilon_start_value, layer_type='fc')
+    fc_target_network = DuelingDQNAgent(name="target_fc", state_shape=dense_shape,
+                        n_actions=fc_n_actions, epsilon=epsilon_start_value, layer_type='fc')
 
     fc_agent.model.summary()
 
-    conv_agent = DuelingDQNAgent("dqn_agent_conv", conv_shape,
-                        conv_n_actions, epsilon=epsilon_start_value, layer_type='cnn')
+    conv_agent = DuelingDQNAgent(
+        name="ddqn_agent_conv", state_shape=conv_shape, n_actions=conv_n_actions, epsilon=epsilon_start_value, layer_type='cnn')
     conv_target_network = DuelingDQNAgent(
-        "target_network_conv", conv_shape, conv_n_actions, layer_type='cnn')
+        name="target_conv", state_shape=conv_shape, n_actions=conv_n_actions, epsilon=epsilon_start_value,layer_type='cnn')
 
 
     try:
@@ -294,7 +293,7 @@ with tqdm(total=rl_iterations,
 
         
         conv_agent.epsilon = max(conv_agent.epsilon * epsilon_decay, min_epsilon)
-        fc_agent.epsilon = max(fc_agent.epsilon * epsilon_decay, min_epsilon)
+        fc_agent.epsilon = conv_agent.epsilon
         t.postfix[0] = conv_agent.epsilon
         t.postfix[5]= len(fc_exp_replay)
         t.postfix[4]= len(conv_exp_replay)
