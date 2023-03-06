@@ -8,7 +8,7 @@ import logging
 
 from CompressionLibrary.agent_evaluators import make_env_imagenet, evaluate_agents, play_and_record
 from CompressionLibrary.reinforcement_models import DuelingDQNAgent
-from CompressionLibrary.replay_buffer import ReplayBufferMultipleDatasets
+from CompressionLibrary.replay_buffer import ReplayBuffer
 from CompressionLibrary.utils import calculate_model_weights
 
 from uuid import uuid4
@@ -21,7 +21,7 @@ import matplotlib.pyplot as plt
 from functools import partial
 
 
-dataset_names = ['fashion_mnist', 'mnist']
+dataset_names = ['fashion_mnist', 'kmnist']
 
 run_id = datetime.now().strftime('%Y-%m-%d-%H-%M%S-') + str(uuid4())
 
@@ -43,23 +43,9 @@ except:
 if strategy:
     print('Number of devices: {}'.format(strategy.num_replicas_in_sync))
 
-log_name = '-'.join(dataset_names)
-logging.basicConfig(level=logging.DEBUG, handlers=[
-    logging.FileHandler(f'/home/A00806415/DCC/ModelCompression/data/ModelCompression_DDDQN_MKII_{log_name}.log', 'w+')],
-    format='%(asctime)s -%(levelname)s - %(funcName)s -  %(message)s')
-logging.root.setLevel(logging.DEBUG)
 
-log = logging.getLogger('tensorflow')
-log.setLevel(logging.ERROR)
-
-
-exploration_filename = data_path + '/DDDQN_MKII_generalist_training.csv'
-test_filename = data_path + '/DDDQN_MKII_generalist_testing.csv'
-agents_path = data_path+'/agents/DDDQN/checkpoints/LeNet_DDDQN_MKII_{}'.format(log_name)
-
-
-current_state = 'layer_input'
-next_state = 'layer_output'
+current_state = 'layer_weights'
+next_state = 'layer_weights'
 
 epsilon_start_value = 0.9
 epsilon_decay = 0.997
@@ -74,6 +60,16 @@ batch_size_per_replica = 256
 tuning_batch_size = batch_size_per_replica * strategy.num_replicas_in_sync
 rl_batch_size = tuning_batch_size
 tuning_epochs = 30
+
+log_name = '-'.join(dataset_names)
+logging.basicConfig(level=logging.DEBUG, handlers=[
+    logging.FileHandler(f'/home/A00806415/DCC/ModelCompression/data/ModelCompression_DuelingDQN_{log_name}.log', 'w+')],
+    format='%(asctime)s -%(levelname)s - %(funcName)s -  %(message)s')
+logging.root.setLevel(logging.DEBUG)
+
+log = logging.getLogger('tensorflow')
+log.setLevel(logging.ERROR)
+
 
 layer_name_list = ['conv2d_1',  'dense', 'dense_1']
 
@@ -193,9 +189,9 @@ with strategy.scope():
 
     try:
         conv_agent.model.load_weights(
-            agents_path+'_conv_agent.ckpt'.format(log_name))
+            data_path+'/checkpoints/DuelingDQN_{}_my_checkpoint_conv_agent'.format(log_name))
         fc_agent.model.load_weights(
-           agents_path+'_fc_agent.ckpt'.format(log_name))
+            data_path+'/checkpoints/DuelingDQN_{}_my_checkpoint_fc_agent'.format(log_name))
     except:
         print('Failed to find pretrained models for the RL agents.')
         pass
@@ -260,45 +256,26 @@ def sample_batch(exp_replay, batch_size):
     }
     
 
-fc_exp_replay = ReplayBufferMultipleDatasets(replay_buffer_size, dataset_names)
-conv_exp_replay = ReplayBufferMultipleDatasets(replay_buffer_size, dataset_names)
+fc_exp_replay = ReplayBuffer(replay_buffer_size)
+conv_exp_replay = ReplayBuffer(replay_buffer_size)
 
 print('There are {} conv and {} fc instances.'.format(len(conv_exp_replay), len(fc_exp_replay)))
 
 for idx, env in enumerate(envs):
     dataset = dataset_names[idx]
-    play_and_record(conv_agent, fc_agent, env, conv_exp_replay, fc_exp_replay, run_id=run_id, test_number=0-idx, dataset_name=dataset,save_name=exploration_filename, n_games=5)
+    play_and_record(conv_agent, fc_agent, env, conv_exp_replay, fc_exp_replay, run_id=run_id, test_number=0-idx, dataset_name=dataset,save_name=data_path+'/DuelingDQN_training_exploration.csv', n_games=5)
 
 print('There are {} conv and {} fc instances.'.format(len(conv_exp_replay), len(fc_exp_replay)))
 
-
-num_datasets = len(dataset_names)
-
-num_tests = (rl_iterations//10) + 1
-
-weights_history_tests = np.zeros(shape=(num_tests, num_datasets))
-acc_history_tests = np.zeros(shape=(num_tests, num_datasets))
-rw_history_tests = np.zeros(shape=(num_tests, num_datasets))
-test_counter = 1
-
-for idx, env in enumerate(envs):
-    weights_history_tests[0, idx ] = env.weights_before
-    acc_history_tests[0, idx] = env.test_acc_before
-
-
 with tqdm(total=rl_iterations,
         bar_format="{l_bar}{bar}|{n}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}, Epsilon: {postfix[0]:.4f} Last 3 RW: {postfix[1][0]:.2f}, {postfix[1][1]:.2f} & {postfix[1][2]:.2f} W: {postfix[2][0]:.2f}, {postfix[2][1]:.2f} & {postfix[2][2]:.2f} Acc: {postfix[3][0]:.2f}, {postfix[3][1]:.2f} & {postfix[3][2]:.2f}] Replay: conv:{postfix[4]}/fc:{postfix[5]}.",
-        postfix=[conv_agent.epsilon,
-        dict({0: 0, 1: 0, 2: np.mean(rw_history_tests[0])}), 
-        dict({0: 0, 1: 0, 2: np.mean(acc_history_tests[0])}),
-        dict({0: 0, 1: 0, 2: np.mean(weights_history_tests[0])}), len(conv_exp_replay), len(fc_exp_replay)]) as t:
-
+        postfix=[conv_agent.epsilon, dict({0: 0, 1: 0, 2: 0}), dict({0: 0, 1: 0, 2: 0}), dict({0: 0, 1: 0, 2: 0}), len(conv_exp_replay), len(fc_exp_replay)]) as t:
     for i in range(rl_iterations):
 
         # generate new sample
         for idx, env in enumerate(envs):
             dataset = dataset_names[idx]
-            play_and_record(conv_agent, fc_agent, env, conv_exp_replay, fc_exp_replay, run_id=run_id, test_number=i, dataset_name=dataset,save_name=exploration_filename,n_games=1)
+            play_and_record(conv_agent, fc_agent, env, conv_exp_replay, fc_exp_replay, run_id=run_id, test_number=i, dataset_name=dataset,save_name=data_path+'/DuelingDQN_training_exploration.csv',n_games=1)
 
         # train fc
         batch_data = sample_batch(conv_exp_replay, batch_size=rl_batch_size)
@@ -328,69 +305,75 @@ with tqdm(total=rl_iterations,
         # adjust agent parameters
         if i % 10 == 0:
             load_weigths_into_target_network(conv_agent, conv_target_network)
-            conv_target_network.model.save_weights(agents_path+'_conv_agent.ckpt'.format(log_name))
+            conv_target_network.model.save_weights(
+                data_path+'/checkpoints/DuelingDQN_{}_my_checkpoint_conv_agent'.format(log_name))
             
             
 
             load_weigths_into_target_network(fc_agent, fc_target_network)
-            fc_target_network.model.save_weights(agents_path+'_fc_agent.ckpt'.format(log_name))
-
+            fc_target_network.model.save_weights(
+                    data_path+'/checkpoints/DuelingDQN_{}_my_checkpoint_fc_agent'.format(log_name))
+            
+            temp_rw = []
+            temp_acc = []
+            temp_w = []
             for idx, env in enumerate(envs):
                 dataset = dataset_names[idx]
-                rw, acc, weights = evaluate_agents(env, conv_agent, fc_agent,run_id=run_id,test_number=i//10, dataset_name=dataset,save_name=test_filename, n_games=eval_n_samples)            
-                rw_history_tests[test_counter, idx] = rw
-                acc_history_tests[test_counter, idx] = acc
-                weights_history_tests[test_counter, idx] = weights
+                rw, acc, weights = evaluate_agents(env, conv_agent, fc_agent,run_id=run_id,test_number=i//10, dataset_name=dataset,save_name=data_path+'/DuelingDQN_test_evaluate.csv', n_games=eval_n_samples)            
+                temp_rw.append(rw)
+                temp_acc.append(acc)
+                temp_w.append(weights)
 
-            t.postfix[1][2] = np.mean(rw_history_tests[test_counter])
+            rw = np.mean(temp_rw)
+            acc = np.mean(temp_acc)
+            weights = np.mean(temp_w)
+
+            mean_rw_history.append(rw)
+            mean_acc_history.append(acc)
+            mean_weights_history.append(weights)
+
+            t.postfix[1][2] = mean_rw_history[-1]
             try:
-                t.postfix[1][1] = np.mean(rw_history_tests[test_counter-1])
+                t.postfix[1][1] = mean_rw_history[-2]
             except IndexError:
                 t.postfix[1][1] = 0
             try:
-                t.postfix[1][0] = np.mean(rw_history_tests[test_counter-2])
+                t.postfix[1][0] = mean_rw_history[-3]
             except IndexError:
                 t.postfix[1][0] = 0
 
-            t.postfix[2][2] = np.mean(weights_history_tests[test_counter])
+            t.postfix[2][2] = mean_weights_history[-1]
             try:
-                t.postfix[2][1] = np.mean(weights_history_tests[test_counter-1])
+                t.postfix[2][1] = mean_weights_history[-2]
             except IndexError:
                 t.postfix[2][1] = 0
             try:
-                t.postfix[2][0] = np.mean(weights_history_tests[test_counter-2])
+                t.postfix[2][0] = mean_weights_history[-3]
             except IndexError:
                 t.postfix[2][0] = 0
 
-            t.postfix[3][2] = np.mean(acc_history_tests[test_counter])
+            t.postfix[3][2] = mean_acc_history[-1]
             try:
-                t.postfix[3][1] = np.mean(acc_history_tests[test_counter-1])
+                t.postfix[3][1] = mean_acc_history[-2]
             except IndexError:
                 t.postfix[3][1] = 0
             try:
-                t.postfix[3][0] = np.mean(acc_history_tests[test_counter-2])
+                t.postfix[3][0] = mean_acc_history[-3]
             except IndexError:
                 t.postfix[3][0] = 0
 
-            test_counter += 1
             fig = plt.figure(figsize=(12,6))
             ax1 = fig.add_subplot(131)
             ax2 = fig.add_subplot(132)
             ax3 = fig.add_subplot(133)
             ax1.title.set_text('Accuracy')
-            for idx, dataset_name in enumerate(dataset_names):
-                ax1.plot(acc_history_tests[:test_counter, idx])
-            ax1.legend(dataset_names)
+            ax1.plot(mean_acc_history)
             ax2.title.set_text('Weights')
-            for idx, dataset_name in enumerate(dataset_names):
-                ax2.plot(weights_history_tests[:test_counter, idx])
-            ax2.legend(dataset_names)
+            ax2.plot(mean_weights_history)
             ax3.title.set_text('Reward')
-            for idx, dataset_name in enumerate(dataset_names):
-                ax3.plot(rw_history_tests[:test_counter, idx])
-            ax3.legend(dataset_names)
+            ax3.plot(mean_rw_history)
             plt.xlabel('Epochs')
-            plt.savefig(f'./data/figures/DDDQN_MKII_{log_name}_test_stats.png')
+            plt.savefig(f'./data/figures/DuelingDQN_{log_name}_test_stats.png')
             plt.close()
 
         t.update()
@@ -401,5 +384,5 @@ with tqdm(total=rl_iterations,
         plt.legend(['conv', 'fc'])
         plt.ylabel("TD loss")
         plt.xlabel('Epochs')
-        plt.savefig(f'./data/figures/DDDQN_MKII_{log_name}_td_loss.png')
+        plt.savefig(f'./data/figures/DuelingDQN_{log_name}_td_loss.png')
         plt.close()

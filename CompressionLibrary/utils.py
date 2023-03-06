@@ -40,9 +40,12 @@ def imagenet_preprocessing(img, label):
     return img, label
 
 def load_dataset(data_path, batch_size=32):
-  splits, info = tfds.load('imagenet2012_subset/1pct', as_supervised=True, with_info=True, shuffle_files=True, 
-                              split=['train[:80%]', 'train[80%:]','validation'], data_dir=data_path)
+  # splits, info = tfds.load('imagenet2012_subset/1pct', as_supervised=True, with_info=True, shuffle_files=True, 
+  #                             split=['train[:80%]', 'train[80%:]','validation'], data_dir=data_path)
 
+  splits, info = tfds.load('imagenet2012', as_supervised=True, with_info=True, shuffle_files=True, 
+                              split=['train[:80%]', 'train[80%:]','validation'], data_dir=data_path)
+                              
   (train_examples, validation_examples, test_examples) = splits
   num_examples = info.splits['train'].num_examples
 
@@ -51,9 +54,9 @@ def load_dataset(data_path, batch_size=32):
 
   input_shape = (224,224,3)
 
-  train_ds = train_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).shuffle(buffer_size=1000, reshuffle_each_iteration=True).batch(batch_size).prefetch(tf.data.AUTOTUNE)
-  valid_ds = validation_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(batch_size).prefetch(tf.data.AUTOTUNE)
-  test_ds = test_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+  train_ds = train_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).shuffle(buffer_size=256, reshuffle_each_iteration=True).batch(batch_size).prefetch(3)
+  valid_ds = validation_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(batch_size).prefetch(3)
+  test_ds = test_examples.map(imagenet_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(batch_size).prefetch(3)
 
   return train_ds, valid_ds, test_ds, input_shape, num_classes, num_examples
 

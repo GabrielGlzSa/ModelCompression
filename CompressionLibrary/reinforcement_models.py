@@ -2,14 +2,16 @@ import tensorflow as tf
 from CompressionLibrary.custom_layers import ROIEmbedding, ROIEmbedding1D
 from CompressionLibrary.utils import OUActionNoise
 import numpy as np
+import logging 
 
 
 class Agent:
-    def __init__(self, name, state_shape, n_actions, epsilon, layer_type='fc'):
+    def __init__(self, name, state_shape, n_actions, epsilon=0.9, layer_type='fc'):
         """Base class for an agent."""
         self.name = name
         self.epsilon = epsilon
         self.model = self.model_creation(name, state_shape, n_actions, layer_type)
+        self.logger = logging.getLogger(__name__)
 
     def get_qvalues(self, state_t):
         """Same as symbolic step except it operates on numpy arrays"""
@@ -94,8 +96,8 @@ class DuelingDQNAgent(Agent):
           output = tf.keras.layers.Lambda(lambda inputs: inputs[0] + (inputs[1] - tf.math.reduce_mean(inputs[1], axis=1, keepdims=True)))([v,a])
         else:          
           input = tf.keras.layers.Input(shape=(None, None, state_shape[-1]))
-          x = tf.keras.layers.Conv2D(64, kernel_size=3)(input) #64
-          x = tf.keras.layers.Conv2D(64, kernel_size=3)(x) #64
+          x = tf.keras.layers.Conv2D(64, kernel_size=3)(input)
+          x = tf.keras.layers.Conv2D(64, kernel_size=3)(x)
           x = ROIEmbedding(n_bins=[(4,4), (2,2), (1,1)])(x)
           v = tf.keras.layers.Dense(512, activation='linear')(x)
           v = tf.keras.layers.Dense(1, activation='linear')(v)
@@ -105,81 +107,133 @@ class DuelingDQNAgent(Agent):
         model = tf.keras.Model(inputs=input, outputs=output, name=name)
         return model
 
-class DDPG:
-    def __init__(self, **kwargs):
-        (super(Agent, self).__init__)(**kwargs)
+class DDPGWeights2D(Agent):
+    def __init__(self, *args, **kwargs):
+        (super(DDPGWeights2D, self).__init__)( *args, **kwargs)
         std_dev = 0.2
-        ou_noise = OUActionNoise(mean=np.zeros(1), std_deviation=float(std_dev) * np.ones(1))
+        self.noise = OUActionNoise(mean=np.zeros(1), std_deviation=float(std_dev) * np.ones(1))
+        self.min_value = 0.01
+        self.max_value = 1.0
+
+    def get_shared_layers(self, state_shape):
+        shared_input = tf.keras.layers.Input(shape=(None, None, state_shape[-1]))
+        x = tf.keras.layers.Conv2D(32, kernel_size=3)(shared_input)
+        x = tf.keras.layers.Conv2D(32, kernel_size=3)(x)
+        x = ROIEmbedding(n_bins=[(8,8),(4,4), (2,2), (1,1)])(x)
+        x = tf.keras.layers.Dense(256, activation='relu')(x)
+        shared_output = tf.keras.layers.Dense(256, activation='relu')(x)
+        return shared_input, shared_output
+        
 
 
-    def get_actor(state_shape, layer_type):
-        if layer_type=='fc':
-            input = tf.keras.layers.Input(shape=(None, 1))
-            x = tf.keras.layers.Conv1D(64, kernel_size=3)(input)
-            x = tf.keras.layers.Conv1D(64, kernel_size=3)(x)
-            x = ROIEmbedding1D(n_bins=[32, 16, 8 ,4, 2, 1])(x)
+    def get_actor(self, shared_input, shared_output):       
+        output = tf.keras.layers.Dense(1, activation='sigmoid')(shared_output)
+        self.actor = tf.keras.Model(inputs=shared_input, outputs=output, name='actor')
 
-        else:          
-            input = tf.keras.layers.Input(shape=(None, None, state_shape[-1]))
-            x = tf.keras.layers.Conv2D(64, kernel_size=3)(input)
-            x = tf.keras.layers.Conv2D(128, kernel_size=3)(x)
-            x = ROIEmbedding(n_bins=[(4,4), (2,2), (1,1)])(x)
+    def get_critic(self, shared_input, shared_output):
+        action_input = tf.keras.layers.Input(shape=(1))
+        action_output = tf.keras.layers.Dense(256, activation='relu')(action_input)
 
-        x = tf.keras.layers.Dense(512, activation='relu')(x)
-        output = tf.keras.layers.Dense(1, activation='sigmoid')
-        model = tf.keras.Model(inputs=input, outputs=output)
-
-    def get_critic(self, state_shape, n_actions, layer_type):
-        if layer_type=='fc':
-            state_input = tf.keras.layers.Input(shape=(None, 1))
-            x = tf.keras.layers.Conv1D(64, kernel_size=3)(state_input)
-            x = tf.keras.layers.Conv1D(64, kernel_size=3)(x)
-            x = ROIEmbedding1D(n_bins=[32, 16, 8 ,4, 2, 1])(x)
-            state_output = tf.keras.layers.Dense(512, activation='relu')(x)
-
-            action_input = tf.keras.layers.Input(shape=(n_actions))
-            action_output = tf.keras.layers.Dense(512, activation='relu')(action_input)
-
-
-        else:          
-            input = tf.keras.layers.Input(shape=(None, None, state_shape[-1]))
-            x = tf.keras.layers.Conv2D(64, kernel_size=3)(input)
-            x = tf.keras.layers.Conv2D(128, kernel_size=3)(x)
-            x = ROIEmbedding(n_bins=[(4,4), (2,2), (1,1)])(x)
-            state_output = tf.keras.layers.Dense(512, activation='relu')(x)
-
-            action_input = tf.keras.layers.Input(shape=(n_actions))
-            action_output = tf.keras.layers.Dense(512, activation='relu')(action_input)
-
-          
-
-        concat = tf.keras.layers.Concatenate()([state_output, action_output])
-        output = tf.keras.layers.Dense(256, activation='relu')(concat)
-        output = tf.keras.layers.Dense(256, activation='relu')(output)
-        output = tf.keras.layers.Dense(1)(output)
-        self.critic = tf.keras.Model(inputs=[state_input, action_input], outputs=output)
+        x = tf.keras.layers.Concatenate()([shared_output, action_output])
+        output = tf.keras.layers.Dense(1)(x)
+        self.critic = tf.keras.Model(inputs=[shared_input, action_input], outputs=output, name='critic')
 
     def model_creation(self, name, state_shape, n_actions, layer_type):
-        self.get_actor(state_shape, layer_type)
-        self.get_actor(state_shape, n_actions, layer_type)
-
-        return None
+        shared_input, shared_output = self.get_shared_layers(state_shape)
+        self.get_actor(shared_input, shared_output)
+        self.get_critic(shared_input, shared_output)
 
     def policy(self, state, exploration=False):
-        sampled_actions = tf.squeeze(self.actor(state))
-        sampled_actions = sampled_actions.numpy() + self.noise
-        legal_action = np.clip(sampled_actions, 0.1, 1.0)
-        return [np.squeeze(legal_action)]
+        sampled_actions = self.actor(state)
+        mean = np.mean(sampled_actions)
+        self.logger.debug(f'Average action before legalizing is {mean}.')
+        legal_action = np.clip(sampled_actions, self.min_value, self.max_value)
+        legal_action = np.mean(legal_action)
+        self.logger.debug(f'Action is {legal_action}.')
+        if exploration:
+            legal_action = legal_action + self.noise()
+            self.logger.debug(f'Action after noise: {legal_action}.')
+            legal_action = np.clip(legal_action, self.min_value, self.max_value)[0]
+            self.logger.debug(f'Action after clipping: {legal_action}.')
+
+        
+
+        return legal_action
+
+    class DDPG(Agent):
+        def __init__(self, *args, **kwargs):
+            (super(DDPG, self).__init__)( *args, **kwargs)
+            std_dev = 0.2
+            self.noise = OUActionNoise(mean=np.zeros(1), std_deviation=float(std_dev) * np.ones(1))
+            self.min_value = 0.01
+            self.max_value = 1.0
 
 
-    def sample_actions_exploration(self, state):
-        """Picks an action for exploration."""
-        actions = self.policy(state, True)
-        action = np.mean(actions)
-        return action
 
-    def sample_actions_greedy(self, state):
-        """Choose greedy action. """
-        actions = self.policy(state, False)
-        action = np.mean(actions)
-        return action
+        def get_actor(self, state_shape, layer_type):
+            if layer_type=='fc':
+                input = tf.keras.layers.Input(shape=(None, 1))
+                x = tf.keras.layers.Conv1D(32, kernel_size=3)(input)
+                x = tf.keras.layers.Conv1D(32, kernel_size=3)(x)
+                x = ROIEmbedding1D(n_bins=[64,32, 16, 8 ,4, 2, 1])(x)
+
+            else:          
+                input = tf.keras.layers.Input(shape=(None, None, state_shape[-1]))
+                x = tf.keras.layers.Conv2D(32, kernel_size=3)(input)
+                x = tf.keras.layers.Conv2D(32, kernel_size=3)(x)
+                x = ROIEmbedding(n_bins=[(8,8),(4,4), (2,2), (1,1)])(x)
+
+            x = tf.keras.layers.Dense(128, activation='relu')(x)
+            output = tf.keras.layers.Dense(1, activation='sigmoid')(x)
+            self.actor = tf.keras.Model(inputs=input, outputs=output)
+
+        def get_critic(self, state_shape, n_actions, layer_type):
+            if layer_type=='fc':
+                state_input = tf.keras.layers.Input(shape=(None, 1))
+                x = tf.keras.layers.Conv1D(32, kernel_size=3)(state_input)
+                x = tf.keras.layers.Conv1D(32, kernel_size=3)(x)
+                x = ROIEmbedding1D(n_bins=[64,32, 16, 8 ,4, 2, 1])(x)
+                state_output = tf.keras.layers.Dense(256, activation='relu')(x)
+
+                action_input = tf.keras.layers.Input(shape=(n_actions))
+                action_output = tf.keras.layers.Dense(256, activation='relu')(action_input)
+
+
+            else:          
+                state_input = tf.keras.layers.Input(shape=(None, None, state_shape[-1]))
+                x = tf.keras.layers.Conv2D(32, kernel_size=3)(state_input)
+                x = tf.keras.layers.Conv2D(32, kernel_size=3)(x)
+                x = ROIEmbedding(n_bins=[(8,8),(4,4), (2,2), (1,1)])(x)
+                state_output = tf.keras.layers.Dense(512, activation='relu')(x)
+
+                action_input = tf.keras.layers.Input(shape=(n_actions))
+                action_output = tf.keras.layers.Dense(256, activation='relu')(action_input)
+
+            
+
+            concat = tf.keras.layers.Concatenate()([state_output, action_output])
+            output = tf.keras.layers.Dense(128, activation='relu')(concat)
+            output = tf.keras.layers.Dense(128, activation='relu')(output)
+            output = tf.keras.layers.Dense(1)(output)
+            self.critic = tf.keras.Model(inputs=[state_input, action_input], outputs=output)
+
+        def model_creation(self, name, state_shape, n_actions, layer_type):
+            self.get_actor(state_shape, layer_type)
+            self.get_critic(state_shape, n_actions, layer_type)
+
+        def policy(self, state, exploration=False):
+            sampled_actions = self.actor(state)
+            mean = np.mean(sampled_actions)
+            self.logger.debug(f'Average action before legalizing is {mean}.')
+            legal_action = np.clip(sampled_actions, self.min_value, self.max_value)
+            legal_action = np.mean(legal_action)
+            self.logger.debug(f'Action is {legal_action}.')
+            if exploration:
+                legal_action = legal_action + self.noise()
+                self.logger.debug(f'Action after noise: {legal_action}.')
+                legal_action = np.clip(legal_action, self.min_value, self.max_value)[0]
+                self.logger.debug(f'Action after clipping: {legal_action}.')
+
+            
+
+            return legal_action

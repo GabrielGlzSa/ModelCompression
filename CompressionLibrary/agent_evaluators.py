@@ -24,12 +24,12 @@ def make_env_imagenet(create_model, train_ds, valid_ds, test_ds, input_shape, la
     parameters['DeepCompression'] = {
         'layer_name': None, 'threshold': 0.001}
     parameters['ReplaceDenseWithGlobalAvgPool'] = {'layer_name': None}
-    parameters['InsertDenseSVD'] = {'layer_name': None}
+    parameters['InsertDenseSVD'] = {'layer_name': None, 'percentage':None}
     parameters['InsertDenseSparse'] = {'layer_name': None,  'new_layer_iterations':2000, 'new_layer_verbose':True}
     parameters['InsertSVDConv'] = {'layer_name': None}
     parameters['DepthwiseSeparableConvolution'] = {'layer_name': None}
     parameters['FireLayerCompression'] = {'layer_name': None}
-    parameters['MLPCompression'] = {'layer_name': None}
+    parameters['MLPCompression'] = {'layer_name': None, 'percentage':None}
     parameters['SparseConvolutionCompression'] = {
         'layer_name': None, 
         'new_layer_iterations': 1000,
@@ -139,10 +139,10 @@ def play_and_record(conv_agent, fc_agent, env, conv_replay, fc_replay, run_id, t
         for row in data:
             if row['was_conv']:
                 for idx, state in enumerate(row['state']):
-                    conv_replay.add(state, row['action'], rewards[-1], row['next_state'][idx], row['done'])
+                    conv_replay.add(state, row['action'], rewards[-1], row['next_state'][idx], row['done'], dataset_name)
             else:
                 for idx, state in enumerate(row['state']):
-                    fc_replay.add(state, row['action'], rewards[-1], row['next_state'][idx], row['done'])
+                    fc_replay.add(state, row['action'], rewards[-1], row['next_state'][idx], row['done'], dataset_name)
 
         del data
 

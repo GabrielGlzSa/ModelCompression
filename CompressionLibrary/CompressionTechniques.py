@@ -97,6 +97,8 @@ class ModelCompression:
         idx = self.find_layer(layer_name)
         layer = self.model.layers[idx]
         # Create the new layer that will replace the target layer.
+
+
         new_layer, new_layer_name, layer_weights_before, layer_weight_after = self.get_new_layer(layer)
      
 
@@ -239,17 +241,20 @@ class InsertDenseSVD(ModelCompression):
         (super(InsertDenseSVD, self).__init__)(**kwargs)
         self.target_layer_type = 'dense'
 
-    def get_new_layer(self, old_layer, percentage=None):
+    def get_new_layer(self, old_layer):
         weights, bias = old_layer.get_weights()
-        _ , units = weights.shape
-        if not percentage:
+        input_size , units = weights.shape
+        if self.percentage is None:
             hidden_units = units//12
+            self.percentage = hidden_units / units
         else:
-            hidden_units = int(units*percentage)
+            # Max number of hidden units in order to have almost the same number of weights.
+            max_units = (input_size * units)//(input_size+units)
+            hidden_units = math.ceil(max_units*self.percentage)
         
         activation = old_layer.get_config()['activation']
-
-        self.logger.debug(f'SVD is being calculated for shape {weights.shape} using {hidden_units} singular values.')
+        self.percentage *= 100
+        self.logger.debug(f'SVD is being calculated for shape {weights.shape} using {hidden_units} singular values ({self.percentage}%).')
         try:
             s, u, v = tf.linalg.svd(weights, full_matrices=True)
         except Exception as e:
@@ -451,8 +456,17 @@ class MLPCompression(ModelCompression):
         kernel, bias = old_layer.get_weights()
 
         weights = tf.reshape(kernel, shape=[-1, filters])
+        if self.percentage is None:
+            hidden_units = filters//6
+            self.percentage = hidden_units / filters
+        else:
+            input_size, _ = weights.shape
+            max_units = (input_size * filters)//(input_size+filters)
+            hidden_units = math.ceil(max_units*self.percentage)
 
-        hidden_units = filters //6
+        self.percentage *= 100
+        self.logger.debug(f'MLP SVD is being calculated for shape {weights.shape} using {hidden_units} singular values ({self.percentage}% of units).')
+
         try:
             s, u, v = tf.linalg.svd(weights, full_matrices=True)
         except Exception as e:
