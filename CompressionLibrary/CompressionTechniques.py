@@ -248,12 +248,16 @@ class InsertDenseSVD(ModelCompression):
             hidden_units = units//12
             self.percentage = hidden_units / units
         else:
-            # Max number of hidden units in order to have almost the same number of weights.
             max_units = (input_size * units)//(input_size+units)
-            hidden_units = math.ceil(max_units*self.percentage)
+            if isinstance(self.percentage, int):
+                hidden_units = math.ceil(max_units * (self.percentage/100))
+            elif isinstance(self.percentage, float):
+                # Max number of hidden units in order to have almost the same number of weights.
+                hidden_units = math.ceil(max_units*self.percentage)
+                self.percentage *= 100
         
         activation = old_layer.get_config()['activation']
-        self.percentage *= 100
+        
         self.logger.debug(f'SVD is being calculated for shape {weights.shape} using {hidden_units} singular values ({self.percentage}%).')
         try:
             s, u, v = tf.linalg.svd(weights, full_matrices=True)
@@ -461,10 +465,14 @@ class MLPCompression(ModelCompression):
             self.percentage = hidden_units / filters
         else:
             input_size, _ = weights.shape
-            max_units = (input_size * filters)//(input_size+filters)
-            hidden_units = math.ceil(max_units*self.percentage)
+            max_filters = (input_size * filters)//(input_size+filters)
+            if isinstance(self.percentage, int):
+                hidden_units = math.ceil(max_filters*(self.percentage/100))
+            elif isinstance(self.percentage, float):
+                hidden_units = math.ceil(max_filters*self.percentage)
+                self.percentage *= 100
 
-        self.percentage *= 100
+        
         self.logger.debug(f'MLP SVD is being calculated for shape {weights.shape} using {hidden_units} singular values ({self.percentage}% of units).')
 
         try:
