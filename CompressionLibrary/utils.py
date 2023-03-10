@@ -182,6 +182,8 @@ def PCA(x, m, high_dim=False):
   
   return reconst, x_mean, principal_vals, principal_components
   
+def calculate_reward(stats: dict) -> float:
+   return 1 - (stats['weights_after']/stats['weights_before']) + 2*stats['accuracy_after'] - 1
 
 class OUActionNoise:
   """
