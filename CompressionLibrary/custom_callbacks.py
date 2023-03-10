@@ -34,13 +34,14 @@ class AddSparseConnectionsCallback(tf.keras.callbacks.Callback):
 
 class RestoreBestWeights(tf.keras.callbacks.Callback):
 
-    def __init__(self, acc_before, weights_before, verbose=0):
+    def __init__(self, acc_before, weights_before, reward_func, verbose=0):
         """
         
         """
         self.verbose = verbose
         self.weights_after = None
         self.weights_before = weights_before
+        self.reward_func = reward_func
         self.acc_before = acc_before
         self.best_weights = None
         self.logger = logging.getLogger(__name__)
@@ -53,12 +54,14 @@ class RestoreBestWeights(tf.keras.callbacks.Callback):
         self.best_acc = - np.inf
         self.best_weights = self.model.get_weights()
         weights_after = utils.calculate_model_weights(self.model)
-        self.best_reward = 1 - (weights_after / self.weights_before) + self.acc_before - 0.9 * self.acc_before
+        stats = {'weights_before': self.weights_before, 'weights_after':weights_after, 'accuracy_after': self.acc_before}
+        self.best_reward = self.reward_func(stats)
         self.best_epoch = 0
             
 
     def on_epoch_end(self, epoch, logs=None):
         current_acc, current_reward = self.get_monitor_values(logs)
+        self.logger.info(f'Epoch {epoch} has a reward of {current_reward}.')
 
         if self.best_weights is None:
             # Restore the weights after first epoch if no progress is ever made.
@@ -93,8 +96,9 @@ class RestoreBestWeights(tf.keras.callbacks.Callback):
         acc_after = logs.get('val_sparse_categorical_accuracy')
         weights_after = utils.calculate_model_weights(self.model)
         self.logger.info(f'Model has {acc_after} accuracy, {weights_after} weights.')
-        reward = 1 - (weights_after / self.weights_before) + acc_after - 0.9 * self.acc_before
-        self.logger.info(f'Reward is {reward}.')
+        weights_after = utils.calculate_model_weights(self.model)
+        stats = {'weights_before': self.weights_before, 'weights_after':weights_after, 'accuracy_after': acc_after}
+        reward = self.reward_func()        
 
         return acc_after, reward
 
