@@ -11,10 +11,11 @@ import logging
 import copy
 
 class ModelCompressionEnv():
-    def __init__(self, compressors_list, create_model_func, compr_params,
+    def __init__(self, reward_func, compressors_list, create_model_func, compr_params,
                  train_ds, validation_ds, test_ds,
                  layer_name_list, input_shape, current_state_source='layer_input', next_state_source='layer_output', verbose=0, get_state_from='validation', tuning_mode='layer',tuning_epochs=5, num_feature_maps=128, tuning_batch_size=32, strategy=None, model_path='./data'):
 
+        self.reward_func = reward_func
         self._episode_ended = False
         self.verbose = verbose
         self.logger = logging.getLogger(__name__)
@@ -437,6 +438,7 @@ class ModelCompressionEnv():
         self.logger.info(f'Val loss: {val_loss}\t Val acc:{val_acc_after}')
         self.logger.info(f'Test loss: {test_loss}\t Test acc:{test_acc_after}')
         weights_after = calculate_model_weights(self.model)
+
         reward_step = 1 - (weights_after / self.weights_previous_it) + test_acc_after - 0.9 * self.test_acc_before
         reward_all_steps = 1 - (weights_after / self.weights_before) + test_acc_after - 0.9 * self.test_acc_before
         self.weights_previous_it = weights_after
@@ -595,6 +597,154 @@ class ModelCompressionSVDEnv(ModelCompressionEnv):
         
         
         return self._state, reward_all_steps, self._episode_ended, info
+
+
+class ModelCompressionSVDIntEnv(ModelCompressionEnv):
+    def __init__(self,*args, **kwargs):
+        (super(ModelCompressionSVDIntEnv, self).__init__)(*args,**kwargs)
+        self.possible_actions = [5] + list(range(10,110,10))
+
+    def action_space(self):
+        return self.possible_actions
+
+    def step(self, action):
+        if self._episode_ended:
+            return self.reset()
+
+        new_layers_it = []
+        layer_name = self.layer_name_list[self._layer_counter]
+        info = {'layer_name': layer_name}
+
+        layer = self.model.get_layer(layer_name)
+        if isinstance(layer, tf.keras.layers.Conv2D):
+            compressors = self.conv_compressors
+        else:
+            compressors = self.dense_compressors
+
+        self.logger.debug(f'Using action {action} on layer {layer_name}.')
+
+        weights_before = self.weights_previous_it
+        action = self.possible_actions[action]
+        if action == 100 :
+            val_acc_after = self.val_acc_before
+            test_acc_after = self.test_acc_before
+            self.logger.debug(f'Layer {layer_name} was not compressed.')
+            self.chosen_actions.append(action)
+
+        else:
+            self.logger.debug(f'Compressing layer {layer_name} using {compressors[0]} and value {action}.')
+
+            # Save the sequence of actions.
+            self.chosen_actions.append(action)
+
+            
+            class_ = getattr(CompressionTechniques, compressors[0])
+
+            compressor = class_(model=self.model, dataset=self.train_ds, optimizer=self.optimizer, loss=self.loss_object, metrics=self.train_metric, fine_tuning=False, input_shape=self.input_shape, tuning_verbose=self.verbose, callbacks=self.callbacks)
+
+            compressor.callbacks = self.callbacks
+
+            self.compr_params[compressors[0]]['layer_name'] = layer_name
+            self.compr_params[compressors[0]]['percentage'] = action
+
+            self.logger.debug('Params: {}'.format(self.compr_params[compressors[0]]))
+            compressor.compress_layer(**self.compr_params[compressors[0]])
+
+            # Get compressed model
+            self.model = compressor.get_model()
+
+            self.callbacks = compressor.callbacks
+            self.layer_name_list[self._layer_counter] = compressor.new_layer_name
+            new_layers_it.append(compressor.new_layer_name)
+
+
+        self._state = self.get_state('next_state')
+        self._layer_counter += 1
+            
+
+
+        if self._layer_counter == len(self.layer_name_list):
+            self.logger.debug('Episode ended.')
+            self._episode_ended = True
+            
+        if self.tuning_epochs>0 and (self.tuning_mode =='layer' or self._episode_ended): 
+            self.logger.debug(f'Fine-tuning the model for {self.tuning_epochs} epochs in mode {self.tuning_mode}.')
+            if self.strategy:
+                # Extract core info of model to create another inside scope.
+                layers, configs, weights = extract_model_parts(self.model)
+                with self.strategy.scope():
+                    optimizer2 = tf.keras.optimizers.Adam(1e-5)
+                    loss2 = tf.keras.losses.SparseCategoricalCrossentropy()
+                    metric2 = tf.keras.metrics.SparseCategoricalAccuracy()
+                    self.model = create_model_from_parts(layers, configs, weights, optimizer2, loss2, metric2, input_shape=self.input_shape)
+
+                    # for layer in self.model.layers:
+                    #     if layer.name == layer_name:
+                    #         layer.trainable = True
+                    #     else:
+                    #         layer.trainable = False
+                    rbw = RestoreBestWeights(acc_before = self.val_acc_before, reward_func=self.reward_func,weights_before=self.weights_before, verbose=1)
+                    self.model.fit(self.train_ds, epochs=self.tuning_epochs, callbacks=[rbw], validation_data=self.validation_ds, verbose=self.verbose)
+                    # for layer in self.model.layers:
+                    #     layer.trainable = True
+            else:
+                # for layer in self.model.layers:
+                #     if layer.name == layer_name:
+                #         layer.trainable = True
+                #     else:
+                #         layer.trainable = False
+                rbw = RestoreBestWeights(acc_before = self.val_acc_before, reward_func=self, weights_before=self.weights_before, verbose=1)
+                self.model.fit(self.train_ds, epochs=self.tuning_epochs, callbacks=[rbw], validation_data=self.validation_ds, verbose=self.verbose)
+                # for layer in self.model.layers:
+                #     layer.trainable = True
+            
+
+        if self.strategy:
+            self.logger.debug('Strategy found. Using strategy to evaluate model.')
+
+            # Extract core info of model to create another inside scope.
+            layers, configs, weights = extract_model_parts(self.model)
+
+            with self.strategy.scope():
+                optimizer2 = tf.keras.optimizers.Adam(1e-5)
+                loss2 = tf.keras.losses.SparseCategoricalCrossentropy()
+                metric2 = tf.keras.metrics.SparseCategoricalAccuracy()
+                self.model = create_model_from_parts(layers, configs, weights, optimizer2, loss2, metric2, input_shape=self.input_shape)
+                test_loss, test_acc_after = self.model.evaluate(self.test_ds, verbose=self.verbose)
+                val_loss, val_acc_after = self.model.evaluate(self.validation_ds, verbose=self.verbose)
+        else:
+            if action != 0:
+                test_loss, test_acc_after = self.model.evaluate(self.test_ds, verbose=self.verbose)
+                val_loss, val_acc_after = self.model.evaluate(self.validation_ds, verbose=self.verbose)
+            else:
+                test_acc_after = self.test_acc_before
+                val_acc_after = self.val_acc_before
+
+        weights_after = calculate_model_weights(self.model)
+
+ 
+        if self._episode_ended:
+            stats = {'weights_before': self.weights_before, 'weights_after':weights_after, 'accuracy_after': test_acc_after}
+            reward = self.reward_func(stats)
+        else: 
+            reward = 0
+        
+        self.weights_previous_it = weights_after
+
+        info['test_acc_before'] = self.test_acc_before
+        info['test_acc_after'] = test_acc_after
+        info['val_acc_before'] = self.val_acc_before
+        info['val_acc_after'] = val_acc_after
+        info['weights_original'] = self.weights_before
+        info['weights_before_step'] = weights_before
+        info['weights_after'] = weights_after
+        info['actions'] = self.chosen_actions
+        info['reward'] = reward
+        
+        
+        return self._state, reward, self._episode_ended, info
+
+
 
 
 
