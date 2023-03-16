@@ -10,7 +10,7 @@ import sys
 
 
 
-def make_env_imagenet(create_model, train_ds, valid_ds, test_ds, input_shape, layer_name_list, num_feature_maps, tuning_batch_size, tuning_epochs, verbose=0, tuning_mode='layer', current_state_source='layer_input', next_state_source='layer_output', strategy=None, model_path='./data'):
+def make_env_adadeep(create_model, reward_func, train_ds, valid_ds, test_ds, input_shape, layer_name_list, num_feature_maps, tuning_batch_size, tuning_epochs, verbose=0, tuning_mode='layer', current_state_source='layer_input', next_state_source='layer_output', strategy=None, model_path='./data'):
 
     w_comprs = ['InsertDenseSVD', 'InsertDenseSparse',
                 'DeepCompression'] 
@@ -38,11 +38,24 @@ def make_env_imagenet(create_model, train_ds, valid_ds, test_ds, input_shape, la
     parameters['SparseConnectionsCompression'] = {'layer_name': None, 
                                                   'target_perc': 0.75, 'conn_perc_per_epoch': 0.15}
 
-    env = ModelCompressionEnv(compressors_list, create_model, parameters,
-                                      train_ds, valid_ds, test_ds,
-                                      layer_name_list, input_shape, current_state_source=current_state_source, next_state_source=next_state_source, 
-                                      num_feature_maps=num_feature_maps, tuning_batch_size=tuning_batch_size, verbose=verbose, tuning_mode=tuning_mode, tuning_epochs=tuning_epochs,strategy=strategy, model_path=model_path)
-
+    env = ModelCompressionEnv(compressors_list=compressors_list, 
+                                    create_model_func=create_model, 
+                                    compr_params=parameters, 
+                                    train_ds=train_ds, 
+                                    validation_ds=valid_ds, 
+                                    test_ds=test_ds, 
+                                    layer_name_list=layer_name_list, 
+                                    input_shape=input_shape, 
+                                    reward_func=reward_func,
+                                    tuning_batch_size=tuning_batch_size, 
+                                    tuning_epochs=tuning_epochs, 
+                                    tuning_mode=tuning_mode, 
+                                    current_state_source=current_state_source, 
+                                    next_state_source=next_state_source, 
+                                    num_feature_maps=num_feature_maps, 
+                                    verbose=verbose,
+                                    strategy=strategy, 
+                                    model_path=model_path)
     return env
 
 
