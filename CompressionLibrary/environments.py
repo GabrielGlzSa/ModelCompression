@@ -36,6 +36,7 @@ class ModelCompressionEnv():
         self.strategy = strategy
         self.tuning_mode = tuning_mode
         self.callbacks = []
+        self.current_batch = None
 
 
         self.model_path = model_path+'/temp_model'
@@ -173,33 +174,34 @@ class ModelCompressionEnv():
 
         self.logger.debug('Finished creating model to extract feature map.')
 
-        if self.num_feature_maps>0:
-            num_batches = self.num_feature_maps//self.tuning_batch_size
+        if self.current_batch is None:
+            if self.num_feature_maps>0:
+                num_batches = self.num_feature_maps//self.tuning_batch_size
 
-            self.logger.debug(f'For {self.num_feature_maps} samples, {num_batches} samples of {self.tuning_batch_size} are required.')
+                self.logger.debug(f'For {self.num_feature_maps} samples, {num_batches} samples of {self.tuning_batch_size} are required.')
 
-            if self.get_state_from == 'train':
-                random_imgs = self.train_ds.take(num_batches)
-            elif self.get_state_from == 'validation':
-                random_imgs = self.validation_ds.take(num_batches)
-            elif self.get_state_from == 'test':
-                random_imgs = self.test_ds.take(num_batches)
+                if self.get_state_from == 'train':
+                    self.current_batch = self.train_ds.take(num_batches)
+                elif self.get_state_from == 'validation':
+                    self.current_batch = self.validation_ds.take(num_batches)
+                elif self.get_state_from == 'test':
+                    self.current_batch = self.test_ds.take(num_batches)
+                else:
+                    raise "Please choose from 'train', 'validation' and 'test'."
             else:
-                raise "Please choose from 'train', 'validation' and 'test'."
-        else:
-            self.logger.debug('Using all feature maps')
+                self.logger.debug('Using all feature maps')
 
-            if self.get_state_from == 'train':
-                random_imgs = self.train_ds
-            elif self.get_state_from == 'validation':
-                random_imgs = self.validation_ds
-            elif self.get_state_from == 'test':
-                random_imgs = self.test_ds
-            else:
-                raise "Please choose from 'train', 'validation' and 'test'."
+                if self.get_state_from == 'train':
+                    self.current_batch = self.train_ds
+                elif self.get_state_from == 'validation':
+                    self.current_batch = self.validation_ds
+                elif self.get_state_from == 'test':
+                    self.current_batch = self.test_ds
+                else:
+                    raise "Please choose from 'train', 'validation' and 'test'."
 
         self.logger.debug(f'Generating feature maps for layer {layer_name}')
-        state = generate_fmp.predict(random_imgs)
+        state = generate_fmp.predict(self.current_batch, verbose=self.verbose)
 
         del generate_fmp
 
@@ -282,12 +284,13 @@ class ModelCompressionEnv():
 
     def reset(self):
         self.logger.debug('---RESTARTING ENVIRONMENT---')
-
+        
         self.model = self.create_model_func()
         self.layer_name_list = self.original_layer_name_list.copy()
         self.callbacks = []
         self._layer_counter = 0
         self._episode_ended = False
+        self.current_batch = None
         self._state = self.get_state('current_state')
 
         
@@ -381,7 +384,7 @@ class ModelCompressionEnv():
 
 
         if (self.tuning_mode == 'layer' or self._episode_ended) and train_layers:
-            rbw = RestoreBestWeights(acc_before = self.val_acc_before, weights_before=self.weights_before, verbose=1)
+            rbw = RestoreBestWeights(acc_before = self.val_acc_before, reward_func=self.reward_func, weights_before=self.weights_before, verbose=1)
             temp_cb = copy.copy(self.callbacks)
             temp_cb.append(rbw)
 
@@ -439,8 +442,16 @@ class ModelCompressionEnv():
         self.logger.info(f'Test loss: {test_loss}\t Test acc:{test_acc_after}')
         weights_after = calculate_model_weights(self.model)
 
-        reward_step = 1 - (weights_after / self.weights_previous_it) + test_acc_after - 0.9 * self.test_acc_before
-        reward_all_steps = 1 - (weights_after / self.weights_before) + test_acc_after - 0.9 * self.test_acc_before
+        stats = {'weights_before': self.weights_previous_it, 
+                 'weights_after': weights_after, 
+                 'accuracy_before': self.test_acc_before,
+                 'accuracy_after': test_acc_after}
+        
+        reward_step = self.reward_func(stats)
+        stats['weights_before'] = self.weights_before
+        reward_all_steps = self.reward_func(stats)
+        # reward_step = 1 - (weights_after / self.weights_previous_it) + test_acc_after - 0.9 * self.test_acc_before
+        # reward_all_steps = 1 - (weights_after / self.weights_before) + test_acc_after - 0.9 * self.test_acc_before
         self.weights_previous_it = weights_after
 
         self.logger.info(f'Reward for step is {reward_step}. The reward for all steps is {reward_all_steps}.')
