@@ -104,7 +104,7 @@ class ReplayBufferMultipleDatasets(object):
         if self._next_idx[dataset_name] >= len(self._storage[dataset_name]):
             self._storage[dataset_name].append(data)
         else:
-            self._storage[dataset_name][self._next_idx] = data
+            self._storage[dataset_name][self._next_idx[dataset_name]] = data
 
         self._next_idx[dataset_name] = (self._next_idx[dataset_name]+1) % (self._maxsize//2)
 
