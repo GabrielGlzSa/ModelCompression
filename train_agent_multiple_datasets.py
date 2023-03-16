@@ -6,7 +6,7 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 import logging
 
-from CompressionLibrary.agent_evaluators import make_env_imagenet, evaluate_agents, play_and_record
+from CompressionLibrary.agent_evaluators import make_env_adadeep, evaluate_agents, play_and_record
 from CompressionLibrary.reinforcement_models import DuelingDQNAgent
 from CompressionLibrary.replay_buffer import ReplayBufferMultipleDatasets
 from CompressionLibrary.utils import calculate_model_weights
