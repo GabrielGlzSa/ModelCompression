@@ -11,7 +11,7 @@ class AddSparseConnectionsCallback(tf.keras.callbacks.Callback):
         self.conn_perc_per_epoch = conn_perc_per_epoch
         self.layer_name = layer_name
         self.logger = logging.getLogger(__name__)
-
+       
     def on_epoch_end(self, epoch, logs=None):
         self.logger.debug(f'Updating sparse connections of layer {self.layer_name}.')
         names = [layer.name for layer in self.model.layers]
@@ -47,6 +47,11 @@ class RestoreBestWeights(tf.keras.callbacks.Callback):
         self.logger = logging.getLogger(__name__)
         
         self.monitor_op = np.greater
+        self.stats = {'weights_before': self.weights_before,
+                      'weights_after':None, 
+                      'accuracy_before':self.acc_before,
+                      'accuracy_after': None}
+
        
 
     def on_train_begin(self, logs=None):
@@ -54,8 +59,9 @@ class RestoreBestWeights(tf.keras.callbacks.Callback):
         self.best_acc = - np.inf
         self.best_weights = self.model.get_weights()
         weights_after = utils.calculate_model_weights(self.model)
-        stats = {'weights_before': self.weights_before, 'weights_after':weights_after, 'accuracy_after': self.acc_before}
-        self.best_reward = self.reward_func(stats)
+        self.stats['weights_after'] = weights_after
+        self.stats['accuracy_after'] = self.stats['accuracy_before']
+        self.best_reward = self.reward_func(self.stats)
         self.best_epoch = 0
             
 
@@ -97,8 +103,10 @@ class RestoreBestWeights(tf.keras.callbacks.Callback):
         weights_after = utils.calculate_model_weights(self.model)
         self.logger.info(f'Model has {acc_after} accuracy, {weights_after} weights.')
         weights_after = utils.calculate_model_weights(self.model)
-        stats = {'weights_before': self.weights_before, 'weights_after':weights_after, 'accuracy_after': acc_after}
-        reward = self.reward_func()        
+
+        self.stats['weights_after'] = weights_after
+        self.stats['accuracy_after'] = acc_after
+        reward = self.reward_func(self.stats)        
 
         return acc_after, reward
 
