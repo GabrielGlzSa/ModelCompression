@@ -10,7 +10,7 @@ import sys
 
 
 
-def make_env_adadeep(create_model, reward_func, train_ds, valid_ds, test_ds, input_shape, layer_name_list, num_feature_maps, tuning_batch_size, tuning_epochs, verbose=0, tuning_mode='layer', current_state_source='layer_input', next_state_source='layer_output', strategy=None, model_path='./data'):
+def make_env_adadeep(create_model, reward_func, train_ds, valid_ds, test_ds, input_shape, layer_name_list, num_feature_maps, tuning_batch_size, tuning_epochs, verbose=0, get_state_from='train',tuning_mode='layer', current_state_source='layer_input', next_state_source='layer_output', strategy=None, model_path='./data'):
 
     w_comprs = ['InsertDenseSVD', 'InsertDenseSparse',
                 'DeepCompression'] 
@@ -50,7 +50,8 @@ def make_env_adadeep(create_model, reward_func, train_ds, valid_ds, test_ds, inp
                                     tuning_batch_size=tuning_batch_size, 
                                     tuning_epochs=tuning_epochs, 
                                     tuning_mode=tuning_mode, 
-                                    current_state_source=current_state_source, 
+                                    current_state_source=current_state_source,
+                                    get_state_from=get_state_from, 
                                     next_state_source=next_state_source, 
                                     num_feature_maps=num_feature_maps, 
                                     verbose=verbose,
@@ -163,7 +164,7 @@ def play_and_record(conv_agent, fc_agent, env, conv_replay, fc_replay, run_id, t
 
     return np.mean(rewards)
 
-def evaluate_agents(env, conv_agent, fc_agent, run_id, test_number, dataset_name,save_name, n_games=2):
+def evaluate_agents(env, conv_agent, fc_agent, run_id, test_number, dataset_name,save_name, n_games=2, agent_name=None):
     """ Plays n_games full games. If greedy, picks actions as argmax(qvalues). Returns mean reward. """
     rewards = []
     acc = []
@@ -202,11 +203,13 @@ def evaluate_agents(env, conv_agent, fc_agent, run_id, test_number, dataset_name
                 break
         game_time = (datetime.now() - start).total_seconds()
         actions = info['actions']
+        info['agent_name'] = agent_name
         info['actions'] = ','.join(actions)
         info['run_id'] = run_id
         info['test_number'] = test_number
         info['game_id'] = game_id
         info['dataset'] = dataset_name
+        
         del info['layer_name']
         logger.info(f'Actions taken in game {game_id} were  {actions} for a reward of {r}. Took {game_time} seconds.')
         total_time += game_time
