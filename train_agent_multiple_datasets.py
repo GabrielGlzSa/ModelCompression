@@ -21,8 +21,8 @@ import matplotlib.pyplot as plt
 from functools import partial
 
 
-dataset_names = ['fashion_mnist', 'mnist']
-
+dataset_names = ['fashion_mnist', 'kmnist', 'mnist']
+agent_name = 'DDDQN_MKIII_generalist_' + '-'.join(dataset_names)
 run_id = datetime.now().strftime('%Y-%m-%d-%H-%M%S-') + str(uuid4())
 
 try:
@@ -43,9 +43,8 @@ except:
 if strategy:
     print('Number of devices: {}'.format(strategy.num_replicas_in_sync))
 
-log_name = '-'.join(dataset_names)
 logging.basicConfig(level=logging.DEBUG, handlers=[
-    logging.FileHandler(f'/home/A00806415/DCC/ModelCompression/data/ModelCompression_DDDQN_MKII_{log_name}.log', 'w+')],
+    logging.FileHandler(f'/home/A00806415/DCC/ModelCompression/data/ModelCompression_{agent_name}.log', 'w+')],
     format='%(asctime)s -%(levelname)s - %(funcName)s -  %(message)s')
 logging.root.setLevel(logging.DEBUG)
 
@@ -53,9 +52,9 @@ log = logging.getLogger('tensorflow')
 log.setLevel(logging.ERROR)
 
 
-exploration_filename = data_path + '/DDDQN_MKII_generalist_training.csv'
-test_filename = data_path + '/DDDQN_MKII_generalist_testing.csv'
-agents_path = data_path+'/agents/DDDQN/checkpoints/LeNet_DDDQN_MKII_{}'.format(log_name)
+exploration_filename = data_path + f'/{agent_name}_training.csv'
+test_filename = data_path + f'/{agent_name}_testing.csv'
+agents_path = data_path+f'/agents/DDDQN/checkpoints/LeNet_{agent_name}'
 
 
 current_state = 'layer_input'
@@ -126,12 +125,15 @@ def load_dataset(dataset_name, batch_size=128):
 
     input_shape = (28,28,1)
 
-    train_ds = train_examples.map(dataset_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).shuffle(buffer_size=1000, reshuffle_each_iteration=True).batch(batch_size).prefetch(tf.data.AUTOTUNE)
-    valid_ds = validation_examples.map(dataset_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(batch_size).prefetch(tf.data.AUTOTUNE)
-    test_ds = test_examples.map(dataset_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+    train_ds = train_examples.map(dataset_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).cache().shuffle(buffer_size=1000, reshuffle_each_iteration=True).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+    valid_ds = validation_examples.map(dataset_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).cache().batch(batch_size).prefetch(tf.data.AUTOTUNE)
+    test_ds = test_examples.map(dataset_preprocessing, num_parallel_calls=tf.data.AUTOTUNE).cache().batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
     return train_ds, valid_ds, test_ds, input_shape, num_classes
 
+
+def calculate_reward(stats: dict) -> float:
+   return 1 - (stats['weights_after']/stats['weights_before']) + stats['accuracy_after'] - 0.9 * stats['accuracy_before']
 
 input_shape = (28,28,1)
 
@@ -140,8 +142,9 @@ def create_environments(dataset_names):
     for dataset in dataset_names:
         train_ds, valid_ds, test_ds, input_shape, _ = load_dataset(dataset, tuning_batch_size)
         new_func = partial(create_model, dataset_name=dataset, train_ds=train_ds, valid_ds=valid_ds)
-        env = make_env_imagenet(
+        env = make_env_adadeep(
             create_model=new_func, 
+            reward_func=calculate_reward,
             train_ds=train_ds, 
             valid_ds=valid_ds, 
             test_ds=test_ds, 
@@ -192,10 +195,8 @@ with strategy.scope():
 
 
     try:
-        conv_agent.model.load_weights(
-            agents_path+'_conv_agent.ckpt'.format(log_name))
-        fc_agent.model.load_weights(
-           agents_path+'_fc_agent.ckpt'.format(log_name))
+        conv_agent.model.load_weights(agents_path+'_conv_agent.ckpt')
+        fc_agent.model.load_weights(agents_path+'_fc_agent.ckpt')
     except:
         print('Failed to find pretrained models for the RL agents.')
         pass
@@ -328,12 +329,12 @@ with tqdm(total=rl_iterations,
         # adjust agent parameters
         if i % 10 == 0:
             load_weigths_into_target_network(conv_agent, conv_target_network)
-            conv_target_network.model.save_weights(agents_path+'_conv_agent.ckpt'.format(log_name))
+            conv_target_network.model.save_weights(agents_path+'_conv_agent.ckpt')
             
             
 
             load_weigths_into_target_network(fc_agent, fc_target_network)
-            fc_target_network.model.save_weights(agents_path+'_fc_agent.ckpt'.format(log_name))
+            fc_target_network.model.save_weights(agents_path+'_fc_agent.ckpt')
 
             for idx, env in enumerate(envs):
                 dataset = dataset_names[idx]
@@ -390,7 +391,7 @@ with tqdm(total=rl_iterations,
                 ax3.plot(rw_history_tests[:test_counter, idx])
             ax3.legend(dataset_names)
             plt.xlabel('Epochs')
-            plt.savefig(f'./data/figures/DDDQN_MKII_{log_name}_test_stats.png')
+            plt.savefig(f'./data/figures/{agent_name}_test_stats.png')
             plt.close()
 
         t.update()
@@ -401,5 +402,5 @@ with tqdm(total=rl_iterations,
         plt.legend(['conv', 'fc'])
         plt.ylabel("TD loss")
         plt.xlabel('Epochs')
-        plt.savefig(f'./data/figures/DDDQN_MKII_{log_name}_td_loss.png')
+        plt.savefig(f'./data/figures/{agent_name}_td_loss.png')
         plt.close()
