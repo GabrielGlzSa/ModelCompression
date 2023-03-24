@@ -20,7 +20,7 @@ import matplotlib.pyplot as plt
 
 from functools import partial
 
-dataset_names = ['mnist']
+dataset_names = ['kmnist']
 log_name = dataset_names[0]
 agent_name = 'DDDQN_MKII_' + log_name
 
@@ -38,7 +38,6 @@ strategy = tf.distribute.OneDeviceStrategy(device="/gpu:0")
 
 exploration_filename = data_path + f'stats\\{agent_name}_training.csv'
 test_filename = data_path + f'stats\\{agent_name}_testing.csv'
-agents_path = data_path+'agents\\PPO\\{}\\{}_{}'.format(agent_name,agent_name, log_name)
 
 
 if strategy:
@@ -233,11 +232,12 @@ def training_loop_fc(state, action, rewards, next_state, done):
     with tf.GradientTape() as tape:
         q_values = fc_agent.get_qvalues(state)
         selected_action_qvalues = tf.reduce_sum(tf.multiply(q_values, masks), axis=1)
-        td_loss = tf.reduce_mean((reference_qvalues - selected_action_qvalues) ** 2)
+        td_error = reference_qvalues - selected_action_qvalues
+        td_loss = tf.reduce_mean(td_error ** 2)
 
     gradients = tape.gradient(td_loss, fc_agent.model.trainable_weights)
     optimizer_fc.apply_gradients(zip(gradients, fc_agent.model.trainable_weights))
-    return td_loss
+    return td_loss, td_error
 
 @tf.function
 def training_loop_conv(state, action, rewards, next_state, done):
@@ -251,11 +251,12 @@ def training_loop_conv(state, action, rewards, next_state, done):
     with tf.GradientTape() as tape:
         q_values = conv_agent.get_qvalues(state)
         selected_action_qvalues = tf.reduce_sum(tf.multiply(q_values, masks), axis=1)
-        td_loss = tf.reduce_mean((reference_qvalues - selected_action_qvalues) ** 2)
+        td_error = reference_qvalues - selected_action_qvalues
+        td_loss = tf.reduce_mean( td_error** 2)
 
     gradients = tape.gradient(td_loss, conv_agent.model.trainable_weights)
     optimizer_conv.apply_gradients(zip(gradients, conv_agent.model.trainable_weights))
-    return td_loss
+    return td_loss, td_error
 
 def moving_average(x, span=100, **kw):
     return pd.DataFrame({'x': np.asarray(x)}).x.ewm(span=span, **kw).mean().values
