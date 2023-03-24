@@ -102,7 +102,6 @@ class RestoreBestWeights(tf.keras.callbacks.Callback):
         acc_after = logs.get('val_sparse_categorical_accuracy')
         weights_after = utils.calculate_model_weights(self.model)
         self.logger.info(f'Model has {acc_after} accuracy, {weights_after} weights.')
-        weights_after = utils.calculate_model_weights(self.model)
 
         self.stats['weights_after'] = weights_after
         self.stats['accuracy_after'] = acc_after
