@@ -251,7 +251,7 @@ class InsertDenseSVD(ModelCompression):
             max_units = (input_size * units)//(input_size+units)
             if isinstance(self.percentage, int):
                 hidden_units = math.ceil(max_units * (self.percentage/100))
-            elif isinstance(self.percentage, float):
+            elif isinstance(self.percentage, float) or isinstance(self.percentage, np.floating):
                 # Max number of hidden units in order to have almost the same number of weights.
                 hidden_units = math.ceil(max_units*self.percentage)
                 self.percentage *= 100
@@ -468,11 +468,10 @@ class MLPCompression(ModelCompression):
             max_filters = (input_size * filters)//(input_size+filters)
             if isinstance(self.percentage, int):
                 hidden_units = math.ceil(max_filters*(self.percentage/100))
-            elif isinstance(self.percentage, float):
+            elif isinstance(self.percentage, float) or isinstance(self.percentage, np.floating):
                 hidden_units = math.ceil(max_filters*self.percentage)
                 self.percentage *= 100
-
-        
+            
         self.logger.debug(f'MLP SVD is being calculated for shape {weights.shape} using {hidden_units} singular values ({self.percentage}% of units).')
 
         try:
