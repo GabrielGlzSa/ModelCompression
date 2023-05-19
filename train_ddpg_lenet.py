@@ -2,8 +2,9 @@ import tensorflow as tf
 import logging
 
 from CompressionLibrary.reinforcement_models import DDPGWeights2D
-from CompressionLibrary.replay_buffer import ReplayBuffer
+from CompressionLibrary.replay_buffer import PrioritizedExperienceReplayBuffer as ReplayBuffer
 from CompressionLibrary.environments import ModelCompressionSVDEnv
+from CompressionLibrary.reward_functions import reward_original as calculate_reward
 import numpy as np
 
 from uuid import uuid4
@@ -15,6 +16,7 @@ import tensorflow_datasets as tfds
 
 import gc
 
+td_errors_list = []
 
 device_name = tf.test.gpu_device_name()
 if device_name != '/device:GPU:0':
@@ -28,15 +30,15 @@ dataset_name = 'mnist'
 data_path = './data'
   
 logging.basicConfig(level=logging.DEBUG, handlers=[
-    logging.FileHandler(f'/home/A00806415/DCC/ModelCompression/data/ModelCompression_DDPG_{dataset_name}.log', 'w+')],
+    logging.FileHandler(f'/home/A00806415/DCC/ModelCompression/data/logs/ModelCompression_DDPG_{dataset_name}.log', 'w+')],
     format='%(asctime)s -%(levelname)s - %(funcName)s -  %(message)s')
 logging.root.setLevel(logging.DEBUG)
 
+logger = logging.getLogger(__name__)
 
-
-exploration_filename = data_path+'/training_exploration_DDPG.csv'
-test_filename = data_path+'/test_evaluate_DDPG.csv'
-agents_path = data_path+'/checkpoints/{}_my_checkpoint_DDPG_'.format(dataset_name)
+exploration_filename = data_path+'/stats/DDPG_mnist_weights_exploration.csv'
+test_filename = data_path+'/stats/DDPG_mnist_weights_testing.csv'
+agents_path = data_path+'/agents/DDPG/checkpoints/DDPG_agent_weights_{}'.format(dataset_name)
 
 current_state = 'layer_weights'
 next_state = 'layer_weights'
@@ -44,9 +46,9 @@ next_state = 'layer_weights'
 epsilon_start_value = 0.9
 epsilon_decay = 0.995
 min_epsilon = 0.1
-replay_buffer_size = 5000
+replay_buffer_size = 10**4
 
-rl_iterations = 2000
+rl_iterations = 10000
 n_samples_mode = -1
 strategy = None
 tuning_batch_size = 64
@@ -54,6 +56,19 @@ tuning_epochs = 0
 rl_batch_size = 64
 verbose = 0
 tuning_mode = 'layer'
+
+# Learning rate for actor-critic models
+critic_lr = 10**-5
+actor_lr = 10**-5
+
+# Discount factor for future rewards
+gamma = 0.99
+# Used to update target networks
+tau = 0.01
+
+# Control importance-sampling correction.
+beta = 1.0
+
 
 layer_name_list = ['conv2d_1',  'dense', 'dense_1']
 
@@ -117,7 +132,7 @@ def create_model():
 
 input_shape = (28,28,1)
 
-def make_env(create_model, train_ds, valid_ds, test_ds, input_shape, layer_name_list, num_feature_maps, tuning_batch_size, tuning_epochs, verbose=0, tuning_mode='layer', current_state_source='layer_input', next_state_source='layer_output', strategy=None, model_path='./data'):
+def make_env(create_model, reward_func, train_ds, valid_ds, test_ds, input_shape, layer_name_list, num_feature_maps, tuning_batch_size, tuning_epochs, verbose, tuning_mode, current_state_source, next_state_source, strategy):
 
     w_comprs = ['InsertDenseSVD'] 
     l_comprs = ['MLPCompression']
@@ -127,26 +142,42 @@ def make_env(create_model, train_ds, valid_ds, test_ds, input_shape, layer_name_
     parameters['InsertDenseSVD'] = {'layer_name': None, 'percentage': None}
     parameters['MLPCompression'] = {'layer_name': None, 'percentage': None}
 
-    env = ModelCompressionSVDEnv(compressors_list, create_model, parameters, train_ds, valid_ds, test_ds, layer_name_list, input_shape, tuning_batch_size=tuning_batch_size, tuning_epochs=tuning_epochs, current_state_source=current_state_source, next_state_source=next_state_source, num_feature_maps=num_feature_maps, verbose=verbose,strategy=strategy, model_path=model_path)
+    env = ModelCompressionSVDEnv(
+        reward_func=reward_func,
+        compressors_list=compressors_list, 
+        create_model_func=create_model, 
+        compr_params=parameters, 
+        train_ds=train_ds, 
+        validation_ds=valid_ds, 
+        test_ds=test_ds, 
+        layer_name_list=layer_name_list, 
+        input_shape=input_shape, 
+        tuning_batch_size=tuning_batch_size, 
+        tuning_epochs=tuning_epochs, 
+        current_state_source=current_state_source, 
+        next_state_source=next_state_source, 
+        num_feature_maps=num_feature_maps, 
+        verbose=verbose,
+        strategy=strategy)
 
     return env
 
 env = make_env(
-        create_model=create_model, 
-        train_ds=train_ds, 
-        valid_ds=valid_ds, 
-        test_ds=test_ds, 
-        input_shape=input_shape, 
-        layer_name_list=layer_name_list, 
-        num_feature_maps=n_samples_mode,
-        tuning_batch_size=tuning_batch_size,
-        tuning_epochs = tuning_epochs, 
-        verbose=verbose, 
-        tuning_mode='final', 
-        current_state_source=current_state, 
-        next_state_source=next_state, 
-        strategy=strategy, 
-        model_path=data_path)
+            create_model=create_model, 
+            reward_func=calculate_reward,
+            train_ds=train_ds, 
+            valid_ds=valid_ds, 
+            test_ds=test_ds, 
+            input_shape=input_shape, 
+            layer_name_list=layer_name_list, 
+            num_feature_maps=n_samples_mode,
+            tuning_batch_size=tuning_batch_size,
+            tuning_epochs = tuning_epochs, 
+            verbose=verbose, 
+            tuning_mode=tuning_mode, 
+            current_state_source=current_state, 
+            next_state_source=next_state, 
+            strategy=strategy)
 
 env.model.summary()
 
@@ -160,71 +191,93 @@ print(conv_shape, dense_shape)
 upper_bound = action_space['high']
 lower_bound = action_space['low']
 
-print("Max Value of Action ->  {}".format(upper_bound))
-print("Min Value of Action ->  {}".format(lower_bound))
+logger.debug("Max Value of Action ->  {}".format(upper_bound))
+logger.debug("Min Value of Action ->  {}".format(lower_bound))
 
 
-conv_agent = DDPG("ddpg_agent_conv", conv_shape,
+agent = DDPGWeights2D("agent", conv_shape,
                         fc_n_actions, epsilon=epsilon_start_value, layer_type='conv')
-conv_target_agent = DDPG(
+target_agent = DDPGWeights2D(
     "target_network_fc", conv_shape,
                         fc_n_actions, epsilon=epsilon_start_value, layer_type='conv')
 
-conv_agent.actor.summary()
-conv_agent.critic.summary()
+agent.actor.summary()
+agent.critic.summary()
 
 
 
 try:
-    conv_target_agent.actor.load_weights(agents_path+'actor')
-    conv_target_agent.critic.load_weights(agents_path+'critic')
+    target_agent.actor.load_weights(agents_path+'_actor')
+    target_agent.critic.load_weights(agents_path+'_critic')
 except:
-    print('Failed to find pretrained models for the RL agents.')
+    logger.debug('Failed to find pretrained models for the RL agents.')
     pass
 
 def sample_batch(exp_replay, batch_size):
-    obs_batch, act_batch, reward_batch, next_obs_batch, _ = exp_replay.sample(
+    obs_batch, act_batch, reward_batch, next_obs_batch, done, probs, td_indexes = exp_replay.sample(
         batch_size)
     return {
         'state_batch': tf.cast(obs_batch.to_tensor(), tf.float32),
         'action_batch': tf.cast(act_batch, tf.int32),
         'reward_batch': tf.cast(reward_batch, tf.float32),
-        'next_state_batch': tf.cast(next_obs_batch.to_tensor(), tf.float32)
+        'next_state_batch': tf.cast(next_obs_batch.to_tensor(), tf.float32),
+        'done': tf.cast(done, tf.float32),
+        'sample_probabilities': tf.cast(probs, tf.float32),
+        'td_indexes': td_indexes
     }
 
+
+def calculate_td_error(agent, target_agent, state_batch, action_batch, reward_batch, next_state_batch, done):
+    target_actions = target_agent.actor(next_state_batch)
+    logger.debug(f'Target action is {target_actions} for shape {next_state_batch.shape}')
+    critic_next_value = tf.math.multiply_no_nan(target_agent.critic([next_state_batch, target_actions]),(1.0 - done))
+    logger.debug(f'Critic value for next state is {critic_next_value}')
+    y = reward_batch + gamma * critic_next_value 
+    logger.debug(f'Y is {y}')
+    critic_current_value = agent.critic([state_batch, action_batch])
+    logger.debug(f'Critic value for current state is {critic_current_value}')
+    td_error = y - critic_current_value
+    return td_error
+
 @tf.function(experimental_relax_shapes=True)
-def update_fc(
+def update_agent(
     state_batch,
     action_batch,
     reward_batch,
     next_state_batch,
+    done,
+    sample_probabilities
 ):
     # Training and updating Actor & Critic networks.
     # See Pseudo Code.
+    reward_batch = tf.expand_dims(reward_batch, axis=-1)
+    sample_probabilities = tf.expand_dims(sample_probabilities, axis=-1)
+    done = tf.expand_dims(done, axis=-1)
     with tf.GradientTape() as tape:
-        target_actions = conv_target_agent.actor(next_state_batch, training=True)
-        y = reward_batch + gamma * conv_target_agent.critic(
-            [next_state_batch, target_actions], training=True
-        )
-        critic_value = conv_agent.critic([state_batch, action_batch], training=True)
-        critic_loss = tf.math.reduce_mean(tf.math.square(y - critic_value))
+        target_actions = target_agent.actor(next_state_batch, training=True)
+        critic_next_values = tf.math.multiply_no_nan(target_agent.critic([next_state_batch, target_actions], training=True), (1.0 - done))
+        y = reward_batch + gamma * critic_next_values
+        critic_current_values = agent.critic([state_batch, action_batch], training=True) 
+        td_error = y - critic_current_values
+        deltai = tf.math.square(td_error)
+        importance_sampling = 1 / (replay_buffer_size** beta * sample_probabilities**beta)
+        critic_loss = tf.math.reduce_mean(importance_sampling*deltai)
 
-    critic_grad = tape.gradient(critic_loss, conv_agent.critic.trainable_variables)
-    critic_optimizer.apply_gradients(
-        zip(critic_grad, conv_agent.critic.trainable_variables)
-    )
+    critic_grad = tape.gradient(critic_loss, agent.critic.trainable_variables)
+    critic_optimizer.apply_gradients(zip(critic_grad, agent.critic.trainable_variables))
 
     with tf.GradientTape() as tape:
-        actions = conv_agent.actor(state_batch, training=True)
-        critic_value = conv_agent.critic([state_batch, actions], training=True)
+        actions = agent.actor(state_batch, training=True)
+        critic_value = agent.critic([state_batch, actions], training=True)
         # Used `-value` as we want to maximize the value given
         # by the critic for our actions
         actor_loss = -tf.math.reduce_mean(critic_value)
 
-    actor_grad = tape.gradient(actor_loss, conv_agent.actor.trainable_variables)
+    actor_grad = tape.gradient(actor_loss, agent.actor.trainable_variables)
     actor_optimizer.apply_gradients(
-        zip(actor_grad, conv_agent.actor.trainable_variables)
+        zip(actor_grad, agent.actor.trainable_variables)
     )
+    return td_error
 
 # This update target parameters slowly
 # Based on rate `tau`, which is much less than one.
@@ -238,18 +291,12 @@ def copy_weights(target, agent):
     target.actor.set_weights(agent.actor.get_weights())
     target.critic.set_weights(agent.critic.get_weights())
 
-# Learning rate for actor-critic models
-critic_lr = 0.002
-actor_lr = 0.001
+
 
 critic_optimizer = tf.keras.optimizers.Adam(critic_lr)
 actor_optimizer = tf.keras.optimizers.Adam(actor_lr)
 
-# Discount factor for future rewards
-gamma = 0.99
-# Used to update target networks
-tau = 0.005
-buffer_conv = ReplayBuffer(replay_buffer_size)
+experience_replay = ReplayBuffer(replay_buffer_size)
 
 """
 Now we implement our main training loop, and iterate over episodes.
@@ -262,7 +309,7 @@ ep_reward_list = []
 # To store average reward history of last few episodes
 avg_reward_list = []
 
-def play_and_record(conv_agent, env, fc_replay, run_id, test_number, dataset_name, save_name, n_games=10, exploration=True):
+def play_and_record(env, replay, run_id, test_number, dataset_name, save_name, n_games=10, exploration=True):
     # initial state
     s = env.reset()
     # Play the game for n_steps as per instructions above
@@ -282,7 +329,7 @@ def play_and_record(conv_agent, env, fc_replay, run_id, test_number, dataset_nam
             current_layer_name = env.layer_name_list[env._layer_counter]
 
             # Action is the mode of the action.
-            action = conv_agent.policy(s, exploration=exploration)
+            action = agent.policy(s, exploration=exploration)
             logger.debug(f'Action for layer {current_layer_name} layer is {action}')
 
             # Apply action
@@ -292,30 +339,39 @@ def play_and_record(conv_agent, env, fc_replay, run_id, test_number, dataset_nam
             logger.debug(f'Iteration {it} - Layer {current_layer_name} {k}/{len(env.layer_name_list)}\tChosen action {action} has {r} reward.')
             logger.debug(info)
 
-            row = {'state': s, 'action': action, 'reward': r,
-                   'next_state': new_s, 'done': done, 'info': info}
-
-
             num_inst = s.shape[0]
 
             if exploration:
-                logging.debug('Storing instance in fc replay.')
-                fc_replay.add_multiple(s, [action]*num_inst, [info['reward_step']]*num_inst, new_s, [None]*num_inst)
+                logging.debug('Storing instance replay.')
+                actions_batch = np.array([action]*num_inst)
+                rewards_batch = np.array([r]*num_inst)
+                done_float = 1.0 if done else 0.0
+                td_errors = calculate_td_error(s, actions_batch, rewards_batch, new_s, done_float)
+                logging.debug(f'Layer TD error is {td_errors}')
+                td_errors = np.abs(td_errors)
+                    
+                replay.add_multiple(s, [action]*num_inst, [r]*num_inst, new_s, td_errors, [done]*num_inst)
                 logging.debug('Sampling instances from fc replay.')
-                batch = sample_batch(fc_replay, rl_batch_size)
-                logging.debug('Training fc agent.')
-                update_fc(**batch)
+                batch = sample_batch(replay, rl_batch_size)
+                logging.debug('Training agent on 2D weights.')
+                td_error_indexes = batch['td_indexes']
+                del batch['td_indexes']
+                td_errors = update_agent(**batch)
+                td_errors_list.append(td_errors[0][0])
+                td_errors = tf.abs(td_errors)
+                
+                replay.update_td_error(td_error_indexes, td_errors.numpy().flatten())
                 logging.debug('Updating weights of target agent.')
-                update_target(conv_target_agent.actor.variables, conv_agent.actor.variables, tau)
-                update_target(conv_target_agent.critic.variables, conv_agent.critic.variables, tau)
+                update_target(target_agent.actor.variables, agent.actor.variables, tau)
+                update_target(target_agent.critic.variables, agent.critic.variables, tau)
 
 
             s = env.get_state('current_state')
 
             if done:
                 s = env.reset()
-                conv_target_agent.actor.save_weights(agents_path+'fc_actor')
-                conv_target_agent.critic.save_weights(agents_path+'fc_critic')
+                target_agent.actor.save_weights(agents_path+'_actor')
+                target_agent.critic.save_weights(agents_path+'_critic')
                 break
 
             gc.collect()
@@ -328,15 +384,14 @@ def play_and_record(conv_agent, env, fc_replay, run_id, test_number, dataset_nam
         info['game_id'] = it
         info['dataset'] = dataset_name
         del info['layer_name']
-        reward = info['reward_all_steps']
-        rewards.append(reward)
+        rewards.append(r)
         acc.append(info['test_acc_after'])
         weights.append(info['weights_after'])
         new_row = pd.DataFrame(info, index=[0])
         new_row.to_csv(save_name, mode='a', index=False)
 
         # Correct reward is the last value of r.
-        rewards.append(r)
+        
         end = datetime.now()
         time_diff = (end - start).total_seconds()
         total_time += time_diff
@@ -346,71 +401,82 @@ def play_and_record(conv_agent, env, fc_replay, run_id, test_number, dataset_nam
 
     return np.mean(rewards), np.mean(acc), np.mean(weights)
 
-mean_weights_history = np.empty(shape=rl_iterations+1)
-mean_acc_history = np.empty(shape=rl_iterations+1)
-mean_rw_history = np.empty(shape=rl_iterations+1)
+
+number_tests = rl_iterations//10
+mean_weights_history = np.empty(shape=number_tests+1)
+mean_acc_history = np.empty(shape=number_tests+1)
+mean_rw_history = np.empty(shape=number_tests+1)
 
 mean_weights_history[0] = env.weights_before
 mean_acc_history[0] = env.test_acc_before
 mean_rw_history[0] = 0.0
+test_counter = 1
 
 with tqdm(total=rl_iterations,
         bar_format="{l_bar}{bar}|{n}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}, Last 3 RW: {postfix[0][0]:.2f}, {postfix[0][1]:.2f} & {postfix[0][2]:.2f} W: {postfix[1][0]:.2f}, {postfix[1][1]:.2f} & {postfix[1][2]:.2f} Acc: {postfix[2][0]:.2f}, {postfix[2][1]:.2f} & {postfix[2][2]:.2f}] Replay: {postfix[3]} .",
-        postfix=[dict({0: 0, 1: 0, 2: 0}), dict({0: 0, 1: 0, 2: 0}), dict({0: 0, 1: 0, 2: 0}), len(buffer_conv)]) as t:
+        postfix=[dict({0: 0, 1: 0, 2: 0}), dict({0: 0, 1: 0, 2: 0}), dict({0: 0, 1: 0, 2: 0}), len(experience_replay)]) as t:
     for i in range(1, rl_iterations+1):
-        rw, acc, weights = play_and_record(conv_agent, env, buffer_conv, run_id=run_id, test_number=i, dataset_name=dataset_name,save_name=exploration_filename,n_games=1, exploration=True)
-
-        rw, acc, weights = play_and_record(conv_agent, env, buffer_conv, run_id=run_id, test_number=i, dataset_name=dataset_name,save_name=test_filename,n_games=1, exploration=False)
-        mean_rw_history[i] = rw
-        mean_acc_history[i] = acc
-        mean_weights_history[i] = weights
-
-        t.postfix[0][2] = mean_rw_history[i]
-        t.postfix[3] = len(buffer_conv)
+        rw, acc, weights = play_and_record(env, experience_replay, run_id=run_id, test_number=i, dataset_name=dataset_name,save_name=exploration_filename,n_games=1, exploration=True)
         
-        try:
-            t.postfix[0][1] = mean_rw_history[i-1]
-        except IndexError:
-            t.postfix[0][1] = 0
-        try:
-            t.postfix[0][0] = mean_rw_history[i-2]
-        except IndexError:
-            t.postfix[0][0] = 0
+        t.postfix[3] = len(experience_replay)
+        if i % 10 == 0 and i>0: 
+            rw, acc, weights = play_and_record(env, experience_replay, run_id=run_id, test_number=i, dataset_name=dataset_name,save_name=test_filename,n_games=1, exploration=False)
+            mean_rw_history[test_counter] = rw
+            mean_acc_history[test_counter] = acc
+            mean_weights_history[test_counter] = weights
 
-        t.postfix[1][2] = mean_weights_history[i]
-        try:
-            t.postfix[1][1] = mean_weights_history[i-1]
-        except IndexError:
-            t.postfix[1][1] = 0
-        try:
-            t.postfix[1][0] = mean_weights_history[i-2]
-        except IndexError:
-            t.postfix[1][0] = 0
+            t.postfix[0][2] = mean_rw_history[test_counter]
+            
+            
+            try:
+                t.postfix[0][1] = mean_rw_history[test_counter-1]
+            except IndexError:
+                t.postfix[0][1] = 0
+            try:
+                t.postfix[0][0] = mean_rw_history[test_counter-2]
+            except IndexError:
+                t.postfix[0][0] = 0
 
-        t.postfix[2][2] = mean_acc_history[i]
-        try:
-            t.postfix[2][1] = mean_acc_history[i-1]
-        except IndexError:
-            t.postfix[2][1] = 0
-        try:
-            t.postfix[2][0] = mean_acc_history[i-2]
-        except IndexError:
-            t.postfix[2][0] = 0
+            t.postfix[1][2] = mean_weights_history[test_counter]
+            try:
+                t.postfix[1][1] = mean_weights_history[test_counter-1]
+            except IndexError:
+                t.postfix[1][1] = 0
+            try:
+                t.postfix[1][0] = mean_weights_history[test_counter-2]
+            except IndexError:
+                t.postfix[1][0] = 0
 
+            t.postfix[2][2] = mean_acc_history[test_counter]
+            try:
+                t.postfix[2][1] = mean_acc_history[test_counter-1]
+            except IndexError:
+                t.postfix[2][1] = 0
+            try:
+                t.postfix[2][0] = mean_acc_history[test_counter-2]
+            except IndexError:
+                t.postfix[2][0] = 0
 
+            test_counter += 1
+            fig = plt.figure(figsize=(12,6))
+            ax1 = fig.add_subplot(131)
+            ax2 = fig.add_subplot(132)
+            ax3 = fig.add_subplot(133)
+            ax1.title.set_text('Accuracy')
+            ax1.plot(mean_acc_history[:test_counter])
+            ax2.title.set_text('Weights')
+            ax2.plot(mean_weights_history[:test_counter])
+            ax3.title.set_text('Reward')
+            ax3.plot(mean_rw_history[:test_counter])
+            plt.xlabel('Epochs')
+            plt.savefig(f'./data/figures/DDPG_test_stats.png')
+            plt.close()
 
-        fig = plt.figure(figsize=(12,6))
-        ax1 = fig.add_subplot(131)
-        ax2 = fig.add_subplot(132)
-        ax3 = fig.add_subplot(133)
-        ax1.title.set_text('Accuracy')
-        ax1.plot(mean_acc_history)
-        ax2.title.set_text('Weights')
-        ax2.plot(mean_weights_history)
-        ax3.title.set_text('Reward')
-        ax3.plot(mean_rw_history)
-        plt.xlabel('Epochs')
-        plt.savefig(f'./data/figures/DDPG_test_stats.png')
-        plt.close()
+            fig = plt.figure(figsize=(12,6))
+            plt.plot(td_errors_list)
+            plt.xlabel('Epochs')
+            plt.ylabel('TD error')
+            plt.savefig(f'./data/figures/DDPG_td_error.png')
+            plt.close()
 
         t.update()
