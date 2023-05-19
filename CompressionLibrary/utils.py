@@ -8,6 +8,43 @@ import tensorflow.keras.backend as K
 import logging
 
 
+def create_lenet_model(dataset_name, train_ds, valid_ds):
+    checkpoint_path = f"./data/models/lenet_{dataset_name}/cp.ckpt"
+    optimizer = tf.keras.optimizers.Adam(1e-5)
+    loss_object = tf.keras.losses.SparseCategoricalCrossentropy()
+    train_metric = tf.keras.metrics.SparseCategoricalAccuracy()
+    input = tf.keras.layers.Input((28,28,1))
+    x = tf.keras.layers.Conv2D(6, (5,5), padding='SAME', activation='sigmoid', name='conv2d')(input)
+    x = tf.keras.layers.AveragePooling2D((2,2), strides=2, name='avg_pool_1')(x)
+    x = tf.keras.layers.Conv2D(16, (5,5), padding='VALID', activation='sigmoid', name='conv2d_1')(x)
+    x = tf.keras.layers.AveragePooling2D((2,2), strides=2, name='avg_pool_2')(x)
+    x = tf.keras.layers.Flatten(name='flatten')(x)
+    x = tf.keras.layers.Dense(120, activation='sigmoid', name='dense')(x)
+    x = tf.keras.layers.Dense(84, activation='sigmoid', name='dense_1')(x)
+    x = tf.keras.layers.Dense(10, activation='softmax', name='predictions')(x)
+
+    model = tf.keras.Model(input, x, name='LeNet')
+    model.compile(optimizer=optimizer, loss=loss_object,
+                    metrics=[train_metric])
+
+    try:
+        model.load_weights(checkpoint_path).expect_partial()
+    except:
+        cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_path, monitor='val_loss', save_best_only=True,
+                                                 save_weights_only=True,
+                                                 verbose=1)
+        model.fit(train_ds,
+          epochs=3000,
+          validation_data=valid_ds,
+          callbacks=[cp_callback])
+
+    return model       
+
+def normalize_dataset(img, label):
+    img = tf.cast(img, tf.float32)
+    img = img/255.0
+    return img, label
+
 
 def resize_image(image, shape = (224,224)):
   target_width = shape[0]
@@ -39,7 +76,23 @@ def imagenet_preprocessing(img, label):
     img = tf.keras.applications.vgg16.preprocess_input(img, data_format=None)
     return img, label
 
-def load_dataset(data_path, batch_size=32):
+def load_and_normalize_dataset(dataset_name, batch_size):
+    splits, info = tfds.load(dataset_name, as_supervised=True, with_info=True, shuffle_files=True, 
+                                split=['train[:80%]', 'train[80%:]','test'])
+
+    (train_examples, validation_examples, test_examples) = splits
+    num_examples = info.splits['train'].num_examples
+
+    num_classes = info.features['label'].num_classes
+    input_shape = info.features['image'].shape
+
+    train_ds = train_examples.map(normalize_dataset, num_parallel_calls=tf.data.AUTOTUNE).cache().shuffle(buffer_size=1000, reshuffle_each_iteration=True).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+    valid_ds = validation_examples.map(normalize_dataset, num_parallel_calls=tf.data.AUTOTUNE).cache().batch(batch_size).prefetch(tf.data.AUTOTUNE)
+    test_ds = test_examples.map(normalize_dataset, num_parallel_calls=tf.data.AUTOTUNE).cache().batch(batch_size).prefetch(tf.data.AUTOTUNE)
+
+    return train_ds, valid_ds, test_ds, input_shape, num_classes
+
+def load_imagenet_dataset(data_path, batch_size=32):
   # splits, info = tfds.load('imagenet2012_subset/1pct', as_supervised=True, with_info=True, shuffle_files=True, 
   #                             split=['train[:80%]', 'train[80%:]','validation'], data_dir=data_path)
 
