@@ -36,8 +36,8 @@ except:
 strategy = None
 data_path = './data/'
   
-log_name = 'test_agents_training_ds_12k'
-test_filename = data_path + 'stats/DDDQN_MKII_{}_testing.csv'.format(log_name)
+log_name = 'test_agents_validation_ds_all'
+test_filename = data_path + 'stats/DDDQN_MKII_{}.csv'.format(log_name)
 agents_path = data_path+'agents/DDDQN/checkpoints/'
 
 if strategy:
@@ -58,8 +58,8 @@ next_state = 'layer_output'
 
 epsilon_start_value = 0.9
 verbose = 0
-eval_n_samples = 4
-n_samples_mode = 12000
+eval_n_samples = 1
+n_samples_mode = -1
 tuning_batch_size = 256
 tuning_epochs = 30
 
@@ -146,7 +146,7 @@ def create_environments(dataset_names):
             tuning_epochs=tuning_epochs, 
             verbose=verbose, 
             tuning_mode='layer',
-            get_state_from='train',
+            get_state_from='validation',
             current_state_source=current_state, 
             next_state_source=next_state, 
             strategy=strategy, 
@@ -169,14 +169,21 @@ fc_agent = DuelingDQNAgent(name="ddqn_agent_fc", state_shape=dense_shape,
 conv_agent = DuelingDQNAgent(
     name="ddqn_agent_conv", state_shape=conv_shape, n_actions=conv_n_actions, epsilon=epsilon_start_value, layer_type='cnn')
 
-iterations = len(dataset_names) * len(agents_names)
+n_datasets = len(dataset_names)
+n_agents = len(agents_names)
+iterations =  n_datasets * n_agents 
+print(iterations)
+logger = logging.getLogger(__name__)
+
 with tqdm(total=iterations) as t:
-    for idx, dataset_name in enumerate(dataset_names):
-        env = envs[idx]
+    for i in range(iterations):
+        env_idx = i // n_agents
+        agent_idx = i % n_agents
+        agent_name = agents_names[agent_idx]
+        dataset_name = dataset_names[env_idx]
+        env = envs[env_idx]
+        logger.debug(f'Dataset: {dataset_name}. Agent: {agent_name}.')
+        conv_agent.model.load_weights(agents_path+agent_name+'_conv_agent.ckpt')
+        fc_agent.model.load_weights(agents_path+agent_name+'_fc_agent.ckpt')
 
-        for agent_name in agents_names:
-            # print(dataset_name, agent_name)
-            conv_agent.model.load_weights(agents_path+agent_name+'_conv_agent.ckpt')
-            fc_agent.model.load_weights(agents_path+agent_name+'_fc_agent.ckpt')
-
-            rw, acc, weights = evaluate_agents(env, conv_agent, fc_agent,run_id=run_id,test_number=agent_name, dataset_name=dataset_name, agent_name=agent_name,save_name=test_filename, n_games=eval_n_samples)    
+        rw, acc, weights = evaluate_agents(env, conv_agent, fc_agent,run_id=run_id,test_number=agent_name, dataset_name=dataset_name, agent_name=agent_name,save_name=test_filename, n_games=eval_n_samples)    
