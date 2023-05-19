@@ -1,7 +1,7 @@
 import numpy as np
 import pickle
 import tensorflow as tf
-
+import logging
 class ReplayBuffer(object):
     def __init__(self, size):
         self._storage = []
@@ -170,6 +170,99 @@ class ReplayBufferMultipleDatasets(object):
                 tf.ragged.stack(s_next),
                 np.array(done))
 
+class PrioritizedExperienceReplayBuffer(object):
+    def __init__(self, size, alpha=1):
+        self._storage = []
+        self._maxsize = size
+        self._next_idx = 0
+        self.alpha = alpha
+        self._td_error = np.zeros(size, dtype=np.float32)
+        self.logger = logging.getLogger(__name__)
+
+    def __len__(self):
+        return len(self._storage)
+
+    def __str__(self) -> str:
+        msg = ''
+        for s, a, r, s_next, done in self._storage:
+            msg+=f'{s.shape}, {a}, {r}, {s_next.shape}, {done}\n'
+
+        return msg
+        
+
+    def add(self, s, a, r, s_next, td_error, done):
+
+        data = (s, a, r, s_next, done)
+        if self._next_idx >= len(self._storage):
+            self._storage.append(data)
+        else:
+            self._storage[self._next_idx] = data
+        self._td_error[self._next_idx] = td_error
+        self._next_idx = (self._next_idx+1) % self._maxsize
+
+    def add_multiple(self, s, a, r, s_next, td_error, done):
+        batch_size = s.shape[0]
+        for i in range(batch_size):
+            self.add(s[i], a[i], r[i], s_next[i], td_error[i], done[i])
+
+    def update_td_error(self, indexes, td_errors):
+        self.logger.debug(f'TD errors before: {self._td_error[indexes]}')
+        self._td_error[indexes] = td_errors
+        self.logger.debug(f'TD errors after: {self._td_error[indexes]}')
+
+    def sample(self, batch_size):
+        length_storage = len(self._storage)
+        self.logger.debug(f'Next index is {self._next_idx}.')
+        self.logger.debug(f'Replay buffer size is {length_storage}.')
+        if self._next_idx < length_storage:
+            td_error = self._td_error[:]
+            self.logger.debug(f'TD error lenght is {len(td_error)}.')
+            td_error_sorted_idx = np.argsort(td_error)
+            td_error_sorted_idx = np.flip(td_error_sorted_idx)
+            probabilities = np.empty_like(td_error_sorted_idx, dtype=np.float32)
+            probabilities[td_error_sorted_idx] = list(range(1, length_storage+1)) 
+            probabilities = 1 / np.power(probabilities, self.alpha)
+            probabilities = probabilities / np.sum(probabilities)
+            if batch_size < length_storage:
+                batch = np.random.choice(length_storage, batch_size, p=probabilities, replace=False)
+            else:
+                batch = np.random.choice(length_storage, length_storage, p=probabilities, replace=False)
+        else:
+            td_error = self._td_error[:self._next_idx]
+            length_storage = self._next_idx
+            self.logger.debug(f'TD error lenght is {len(td_error)}.')
+            td_error_sorted_idx = np.argsort(td_error)
+            td_error_sorted_idx = np.flip(td_error_sorted_idx)
+            probabilities = np.empty_like(td_error_sorted_idx, dtype=np.float32)
+            probabilities[td_error_sorted_idx] = list(range(1, length_storage+1)) 
+            probabilities = 1 / np.power(probabilities, self.alpha)
+            probabilities = probabilities / np.sum(probabilities)
+            if batch_size < length_storage:
+                batch = np.random.choice(length_storage, batch_size, p=probabilities, replace=False)
+            else:
+                batch = np.random.choice(length_storage, length_storage, p=probabilities, replace=False)
+
+        
+        s, a, r, s_next, done = [], [], [], [], []
+        for i in batch:
+            s_temp, a_temp, r_temp, sn_temp, done_temp = self._storage[i]
+            s.append(s_temp)
+            a.append(a_temp)
+            r.append(r_temp)
+            s_next.append(sn_temp)
+            done.append(done_temp)
+
+        probs = probabilities[batch]
+        done = np.asarray(done, dtype=np.float32)
+        
+        return (tf.ragged.stack(s),
+                tf.convert_to_tensor(a),
+                tf.convert_to_tensor(r),
+                tf.ragged.stack(s_next),
+                done,
+                tf.convert_to_tensor(probs),
+                batch)
+
 
 class PrioritizedReplayBufferMultipleDatasets(object):
     def __init__(self, size:int, alpha:int, dataset_names:list):
@@ -281,6 +374,7 @@ class PrioritizedReplayBufferMultipleDatasets(object):
             actions.extend(self._actions[dataset_index][batch])
             rewards.extend(self._rewards[dataset_index][batch])
             done.extend(self._done[dataset_index][batch])
+            
 
 
         # Stack feature maps and add depth of 1.
@@ -290,4 +384,7 @@ class PrioritizedReplayBufferMultipleDatasets(object):
                 tf.convert_to_tensor(actions, dtype=tf.int32),
                 tf.convert_to_tensor(rewards, dtype=tf.float32),
                 s_next.to_tensor(),
-                tf.convert_to_tensor(done, dtype=tf.int32))
+                np.array(done))
+
+
+
