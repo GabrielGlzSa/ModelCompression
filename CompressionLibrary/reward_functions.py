@@ -1,8 +1,8 @@
 import tensorflow as tf
 
 
-def reward_funcv1(before, after):
-    """
-    Function that calculates the reward as 1 - (Wt/Wt-1) + At.
-    """
-    return 1 - (after['weights_after'] / before['weights_before']) + after['acc_after']
+def reward_1minus1(stats: dict) -> float:
+   return 1 - (stats['weights_after']/stats['weights_before']) + 2 * (stats['accuracy_after'] - stats['accuracy_before'])
+
+def reward_original(stats: dict) -> float:
+   return 1 - (stats['weights_after']/stats['weights_before']) +  (stats['accuracy_after'] - 0.9 * stats['accuracy_before'])
