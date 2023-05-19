@@ -13,7 +13,7 @@ import copy
 class ModelCompressionEnv():
     def __init__(self, reward_func, compressors_list, create_model_func, compr_params,
                  train_ds, validation_ds, test_ds,
-                 layer_name_list, input_shape, current_state_source='layer_input', next_state_source='layer_output', verbose=0, get_state_from='validation', tuning_mode='layer',tuning_epochs=5, num_feature_maps=128, tuning_batch_size=32, strategy=None, model_path='./data'):
+                 layer_name_list, input_shape, current_state_source='layer_input', next_state_source='layer_output', verbose=0, get_state_from='validation', tuning_mode='layer',tuning_epochs=5, num_feature_maps=128, tuning_batch_size=32, strategy=None):
 
         self.reward_func = reward_func
         self._episode_ended = False
@@ -38,8 +38,6 @@ class ModelCompressionEnv():
         self.callbacks = []
         self.current_batch = None
 
-
-        self.model_path = model_path+'/temp_model'
 
         self.model = self.create_model_func()
         self.optimizer = tf.keras.optimizers.Adam(1e-5)
@@ -115,6 +113,7 @@ class ModelCompressionEnv():
             val_loss, self.val_acc_before = self.model.evaluate(self.validation_ds, verbose=self.verbose)
             self.logger.info(f'Val accuracy is {self.val_acc_before} and loss {val_loss}')
 
+        self.test_acc_previous_it = self.test_acc_before
         self.logger.info('Finished environment initialization.')
 
     def get_highest_num_filters(self):
@@ -239,10 +238,11 @@ class ModelCompressionEnv():
                     layer_idx = names.index(
                         self.layer_name_list[self._layer_counter])
                 elif self.next_state_source == 'layer_weights':
+                    # The next layer of the last compressed layer is the output layer.
                     if self.layer_name_list[self._layer_counter] == self.layer_name_list[-1]:
-                        layer_name = self.layer_name_list[self._layer_counter]
+                        layer_name = self.model.layers[-1].name
                     else:
-                        layer_name = self.layer_name_list[self._layer_counter+1] 
+                        layer_name = self.layer_name_list[self._layer_counter+1]
 
             if layer_name is None:
                 layer_name = names[layer_idx]
@@ -300,8 +300,13 @@ class ModelCompressionEnv():
 
         return self._state
 
-    def calculate_metrics(self):
+    def step(self, action):
         pass
+
+
+class EnvDiscreteUniqueActions(ModelCompressionEnv):
+    def __init__(self, *args, **kwargs):
+        super(EnvDiscreteUniqueActions, self).__init__(*args, **kwargs)
 
     def step(self, action):
         if self._episode_ended:
@@ -497,7 +502,7 @@ class ModelCompressionSVDEnv(ModelCompressionEnv):
         weights_before = self.weights_previous_it
         if action == 1.0:
             val_acc_after = self.val_acc_before
-            test_acc_after = self.test_acc_before
+            test_acc_after = self.test_acc_previous_it
             self.logger.debug(f'Layer {layer_name} was not compressed.')
             self.chosen_actions.append(action)
 
@@ -528,6 +533,7 @@ class ModelCompressionSVDEnv(ModelCompressionEnv):
             new_layers_it.append(compressor.new_layer_name)
 
 
+        
         self._state = self.get_state('next_state')
         self._layer_counter += 1
             
@@ -587,13 +593,21 @@ class ModelCompressionSVDEnv(ModelCompressionEnv):
                 test_loss, test_acc_after = self.model.evaluate(self.test_ds, verbose=self.verbose)
                 val_loss, val_acc_after = self.model.evaluate(self.validation_ds, verbose=self.verbose)
             else:
-                test_acc_after = self.test_acc_before
+                test_acc_after = self.test_acc_previous_it
                 val_acc_after = self.val_acc_before
 
         weights_after = calculate_model_weights(self.model)
-        reward_step = 1 - (weights_after / weights_before) + test_acc_after - 0.9 * self.test_acc_before
-        reward_all_steps = 1 - (weights_after / self.weights_before) + test_acc_after - 0.9 * self.test_acc_before
+
+        if self._episode_ended:
+            stats = {'weights_before': self.weights_before, 'weights_after':weights_after, 'accuracy_after': test_acc_after, 'accuracy_before': self.test_acc_before}
+            reward = self.reward_func(stats)
+        else: 
+            reward = 0
+        
         self.weights_previous_it = weights_after
+        self.test_acc_previous_it = test_acc_after
+
+        
 
         info['test_acc_before'] = self.test_acc_before
         info['test_acc_after'] = test_acc_after
@@ -603,11 +617,10 @@ class ModelCompressionSVDEnv(ModelCompressionEnv):
         info['val_acc_before'] = self.val_acc_before
         info['val_acc_after'] = val_acc_after
         info['actions'] = self.chosen_actions
-        info['reward_step'] = reward_step
-        info['reward_all_steps'] = reward_all_steps
+        info['reward'] = reward
         
         
-        return self._state, reward_all_steps, self._episode_ended, info
+        return self._state, reward, self._episode_ended, info
 
 
 class ModelCompressionSVDIntEnv(ModelCompressionEnv):
