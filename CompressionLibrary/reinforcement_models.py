@@ -10,10 +10,53 @@ class Agent:
     def __init__(self, name, state_shape, n_actions, epsilon=0.9, layer_type='fc'):
         """Base class for an agent."""
         self.name = name
-        self.epsilon = epsilon
+        
         self.model = self.model_creation(name, state_shape, n_actions, layer_type)
         self.logger = logging.getLogger(__name__)
 
+
+class RandomAgent(Agent):
+    def __init__(self, **kwargs):
+        (super(RandomAgent, self).__init__)(**kwargs)
+
+    def model_creation(self, **kwargs):
+        return None
+
+    def get_qvalues(self, state_t):
+        """Return dummy Q-values that will not be used."""
+        return tf.zeros(shape=[self.n_actions], dtype='float32')
+
+    def sample_actions_exploration(self, qvalues):
+        """Picks an action for exploration."""
+        return np.random.choice(range(self.n_actions), size=qvalues.shape[0], replace=True)
+
+    def sample_actions_greedy(self, qvalues):
+        """Choose greedy action. """
+        random_action = np.random.choice(range(self.n_actions), size=1)
+        return random_action
+
+class DQNAgent(Agent):
+    def __init__(self, epsilon, *args, **kwargs):
+        self.epsilon = epsilon
+        (super(DQNAgent, self).__init__)(**kwargs)
+
+    def model_creation(self,name, state_shape, n_actions, layer_type):
+        if layer_type=='fc':
+          input = tf.keras.layers.Input(shape=(None, 1))
+          x = tf.keras.layers.Conv1D(64, kernel_size=3)(input)
+          x = ROIEmbedding1D(n_bins=[32, 16, 8 ,4, 2, 1])(x)
+          x = tf.keras.layers.Dense(512, activation='relu')(x)
+          output = tf.keras.layers.Dense(n_actions, activation=tf.keras.activations.linear)(x)
+        else:          
+          input = tf.keras.layers.Input(shape=(None, None, state_shape[-1]))
+          x = tf.keras.layers.Conv2D(64, kernel_size=3)(input) #64
+          x = tf.keras.layers.Conv2D(64, kernel_size=3)(x) #64
+          x = ROIEmbedding(n_bins=[(4,4), (2,2), (1,1)])(x)
+          x = tf.keras.layers.Dense(512, activation='relu')(x)
+          output = tf.keras.layers.Dense(n_actions, activation=tf.keras.activations.linear)(x)
+        model = tf.keras.Model(inputs=input, outputs=output, name=name)
+        return model
+        
     def get_qvalues(self, state_t):
         """Same as symbolic step except it operates on numpy arrays"""
         qvalues = self.model(state_t)
@@ -38,48 +81,6 @@ class Agent:
         best_action = actions[index]
     
         return [best_action]
-
-
-class RandomAgent(Agent):
-    def __init__(self, **kwargs):
-        (super(RandomAgent, self).__init__)(**kwargs)
-
-    def model_creation(self, **kwargs):
-        return None
-
-    def get_qvalues(self, state_t):
-        """Return dummy Q-values that will not be used."""
-        return tf.zeros(shape=[self.n_actions], dtype='float32')
-
-    def sample_actions_exploration(self, qvalues):
-        """Picks an action for exploration."""
-        return np.random.choice(range(self.n_actions), size=qvalues.shape[0], replace=True)
-
-    def sample_actions_greedy(self, qvalues):
-        """Choose greedy action. """
-        random_action = np.random.choice(range(self.n_actions), size=1)
-        return random_action
-
-class DQNAgent(Agent):
-    def __init__(self, **kwargs):
-        (super(DQNAgent, self).__init__)(**kwargs)
-
-    def model_creation(self,name, state_shape, n_actions, layer_type):
-        if layer_type=='fc':
-          input = tf.keras.layers.Input(shape=(None, 1))
-          x = tf.keras.layers.Conv1D(64, kernel_size=3)(input)
-          x = ROIEmbedding1D(n_bins=[32, 16, 8 ,4, 2, 1])(x)
-          x = tf.keras.layers.Dense(512, activation='relu')(x)
-          output = tf.keras.layers.Dense(n_actions, activation=tf.keras.activations.linear)(x)
-        else:          
-          input = tf.keras.layers.Input(shape=(None, None, state_shape[-1]))
-          x = tf.keras.layers.Conv2D(64, kernel_size=3)(input) #64
-          x = tf.keras.layers.Conv2D(64, kernel_size=3)(x) #64
-          x = ROIEmbedding(n_bins=[(4,4), (2,2), (1,1)])(x)
-          x = tf.keras.layers.Dense(512, activation='relu')(x)
-          output = tf.keras.layers.Dense(n_actions, activation=tf.keras.activations.linear)(x)
-        model = tf.keras.Model(inputs=input, outputs=output, name=name)
-        return model
 
 class DuelingDQNAgent(Agent):
     def __init__(self, **kwargs):
@@ -162,12 +163,12 @@ class DDPGWeights2D(Agent):
         return legal_action
 
 class DDPG(Agent):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, min_value, max_value, *args, **kwargs):
         (super(DDPG, self).__init__)( *args, **kwargs)
         std_dev = 0.2
         self.noise = OUActionNoise(mean=np.zeros(1), std_deviation=float(std_dev) * np.ones(1))
-        self.min_value = 0.01
-        self.max_value = 1.0
+        self.min_value = min_value
+        self.max_value = max_value
 
     def get_shared_layers(self, state_shape, layer_type):
         if layer_type=='fc':
@@ -207,10 +208,9 @@ class DDPG(Agent):
 
     def policy(self, state, exploration=False):
         sampled_actions = self.actor(state)
-        
         mean = np.mean(sampled_actions)
         self.logger.debug(f'Average action before legalizing is {mean}.')
-        legal_action = np.clip(sampled_actions, self.min_value, self.max_value)
+        legal_action = np.clip(sampled_actions, self.min_value, self.max_value)[0]
         legal_action = np.mean(legal_action)
         self.logger.debug(f'Action is {legal_action}.')
         if exploration:
