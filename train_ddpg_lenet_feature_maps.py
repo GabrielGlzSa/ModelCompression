@@ -10,6 +10,7 @@ from CompressionLibrary.environments import ModelCompressionSVDEnv
 from CompressionLibrary.reinforcement_models import DDPG
 from CompressionLibrary.replay_buffer import PrioritizedExperienceReplayBuffer
 from CompressionLibrary.utils import calculate_model_weights
+from CompressionLibrary.reward_functions import reward_MnasNet as calculate_reward
 
 from uuid import uuid4
 from datetime import datetime
@@ -23,7 +24,7 @@ import gc
 
 
 dataset_names = ['mnist']
-agent_name = 'DDPG_feature_maps_' + '-'.join(dataset_names)
+agent_name = 'DDPG_FM_' + '-'.join(dataset_names)
 run_id = datetime.now().strftime('%Y-%m-%d-%H-%M%S-') + str(uuid4())
 
 try:
@@ -45,7 +46,7 @@ if strategy:
     print('Number of devices: {}'.format(strategy.num_replicas_in_sync))
 
 logging.basicConfig(level=logging.DEBUG, handlers=[
-    logging.FileHandler(f'/home/A00806415/DCC/ModelCompression/data/ModelCompression_{agent_name}.log', 'w+')],
+    logging.FileHandler(f'/home/A00806415/DCC/ModelCompression/data/logs/ModelCompression_{agent_name}.log', 'w+')],
     format='%(asctime)s -%(levelname)s - %(funcName)s -  %(message)s')
 logging.root.setLevel(logging.DEBUG)
 
@@ -57,20 +58,19 @@ logger = logging.getLogger(__name__)
 exploration_filename = data_path + f'/stats/{agent_name}_training.csv'
 test_filename = data_path + f'/stats/{agent_name}_testing.csv'
 agents_path = data_path+f'/agents/DDPG/checkpoints/LeNet_{agent_name}'
+figures_path = data_path+f'/figures/{agent_name}'
 
 
 current_state = 'layer_input'
 next_state = 'layer_output'
 state_set_source = 'validation'
 
-epsilon_start_value = 0.9
-epsilon_decay = 0.997
-min_epsilon = 0.1
+
 replay_buffer_size = 10 ** 6
 
 verbose = 0
 rl_iterations = 10000
-update_weights_iterations = 50
+update_weights_iterations = 10
 eval_n_samples = 1
 num_feature_maps = 256
 batch_size_per_replica = 64
@@ -80,7 +80,13 @@ tuning_epochs = 0
 tuning_mode = 'layer'
 gamma = 0.99
 beta = 1.0
-tau = 0.01
+tau = 0.005
+learning_rate = 1e-5
+
+min_a_conv = 0.1
+max_a_conv = 1.0
+min_a_fc = 0.05
+max_a_fc = 1.0
 
 
 layer_name_list = ['conv2d_1',  'dense', 'dense_1']
@@ -141,8 +147,6 @@ def load_dataset(dataset_name, batch_size=128):
     return train_ds, valid_ds, test_ds, input_shape, num_classes
 
 
-def calculate_reward(stats: dict) -> float:
-   return 1 - (stats['weights_after']/stats['weights_before']) + stats['accuracy_after'] - 0.9 * stats['accuracy_before']
 
 input_shape = (28,28,1)
 
@@ -186,15 +190,15 @@ conv_shape, dense_shape = envs[0].observation_space()
 action_space = envs[0].action_space()
 num_actions = 1
 
-fc_n_actions = conv_n_actions = num_actions
 print(conv_shape, dense_shape)
 
 upper_bound = action_space['high']
 lower_bound = action_space['low']
 
-logger.debug("Max Value of Action ->  {}".format(upper_bound))
-logger.debug("Min Value of Action ->  {}".format(lower_bound))
+logger.debug("Value of Action FC ->  {}".format(upper_bound))
+logger.debug(" Value of Action Conv->  {}".format(lower_bound))
 
+fc_n_actions = conv_n_actions = num_actions
 
 
 
@@ -204,23 +208,13 @@ def update_target(target_weights, weights, tau):
         a.assign(b * tau + a * (1 - tau))
 
 
-def copy_weights(target, agent):
-    target.actor.set_weights(agent.actor.get_weights())
-    target.critic.set_weights(agent.critic.get_weights())
-
 
 with strategy.scope():
-    conv_agent = DDPG("conv_agent", conv_shape,
-                        conv_n_actions, epsilon=epsilon_start_value, layer_type='conv')
-    conv_target_agent = DDPG(
-        "conv_target_network", conv_shape,
-                            conv_n_actions, epsilon=epsilon_start_value, layer_type='conv')
+    conv_agent = DDPG(min_a_conv, max_a_conv, "conv_agent", conv_shape, conv_n_actions, layer_type='conv')
+    conv_target_agent = DDPG(min_a_conv, max_a_conv,"conv_target_network", conv_shape, conv_n_actions, layer_type='conv')
 
-    fc_agent = DDPG("fc_agent", conv_shape,
-                            fc_n_actions, epsilon=epsilon_start_value, layer_type='fc')
-    fc_target_agent = DDPG(
-        "conv_target_network_fc", conv_shape,
-                            fc_n_actions, epsilon=epsilon_start_value, layer_type='fc')
+    fc_agent = DDPG(min_a_fc, max_a_fc, "fc_agent", conv_shape, fc_n_actions, layer_type='fc')
+    fc_target_agent = DDPG(min_a_fc, max_a_fc,"conv_target_network_fc", conv_shape, fc_n_actions, layer_type='fc')
 
     fc_agent.actor.summary()
     fc_agent.critic.summary()
@@ -228,19 +222,27 @@ with strategy.scope():
     conv_agent.critic.summary()
 
     try:
-        conv_target_agent.actor.load_weights(agents_path+'_conv_actor')
-        conv_target_agent.critic.load_weights(agents_path+'_conv_critic')
-        fc_target_agent.actor.load_weights(agents_path+'_fc_actor')
-        fc_target_agent.critic.load_weights(agents_path+'_fc_critic')
+        conv_agent.actor.load_weights(agents_path+'_conv_actor')
+        conv_agent.critic.load_weights(agents_path+'_conv_critic')
+        fc_agent.actor.load_weights(agents_path+'_fc_actor')
+        fc_agent.critic.load_weights(agents_path+'_fc_critic')
+        conv_target_agent.actor.load_weights(agents_path+'_conv_actor_target_agent')
+        conv_target_agent.critic.load_weights(agents_path+'_conv_critic_target_agent')
+        fc_target_agent.actor.load_weights(agents_path+'_fc_actor_target_agent')
+        fc_target_agent.critic.load_weights(agents_path+'_fc_critic_target_agent')
     except:
-        print('Failed to find pretrained models for the RL agents.')
+        print('Failed to find pretrained models for the RL agents. Copying weights from agent to target agent.')
+        conv_target_agent.actor.set_weights(conv_agent.actor.get_weights())
+        conv_target_agent.critic.set_weights(conv_agent.critic.get_weights())
+        fc_target_agent.actor.set_weights(fc_agent.actor.get_weights())
+        fc_target_agent.critic.set_weights(fc_agent.critic.get_weights())
         pass
 
 
-    fc_actor_optimizer = tf.keras.optimizers.Adam(1e-5)
-    fc_critic_optimizer = tf.keras.optimizers.Adam(1e-5)
-    conv_actor_optimizer = tf.keras.optimizers.Adam(1e-5)
-    conv_critic_optimizer = tf.keras.optimizers.Adam(1e-5)
+    fc_actor_optimizer = tf.keras.optimizers.Adam(learning_rate)
+    fc_critic_optimizer = tf.keras.optimizers.Adam(learning_rate)
+    conv_actor_optimizer = tf.keras.optimizers.Adam(learning_rate)
+    conv_critic_optimizer = tf.keras.optimizers.Adam(learning_rate)
 
 
 @tf.function(experimental_relax_shapes=True)
@@ -438,8 +440,9 @@ def play_and_record(conv_agent, fc_agent,env, conv_replay, fc_replay,run_id, tes
                     rewards_batch = r
                     done_float = 1.0
                     td_errors = calculate_td_error(conv_agent, conv_target_agent, s, actions_batch, rewards_batch, new_s, done_float)
-                    logging.debug(f'Last conv layer TD error is {td_errors}')
                     td_errors = np.reshape(np.abs(td_errors), -1)
+                    logging.debug(f'Last conv layer TD error is {td_errors}')
+                    
                     conv_replay.add_multiple(s, [action]*num_inst, [r]*num_inst, new_s, td_errors, [done]*num_inst)
                 s = env.reset()
                 break
@@ -447,8 +450,7 @@ def play_and_record(conv_agent, fc_agent,env, conv_replay, fc_replay,run_id, tes
             gc.collect()
         
 
-        actions = info['actions']
-        info['actions'] = ','.join(map(lambda x: str(int(x*100)), actions))
+        info['actions'] = ','.join(['{:.4f}'.format(x) for x in info['actions']] )
         info['run_id'] = run_id
         info['test_number'] = test_number
         info['game_id'] = it
@@ -530,7 +532,7 @@ with tqdm(total=rl_iterations,
             td_error_indexes = batch_data['td_indexes']
             del batch_data['td_indexes']
             conv_loss_t = update_agent_conv(**batch_data)
-            conv_exp_replays[dataset].update_td_error(td_error_indexes, conv_loss_t.numpy().flatten())
+            conv_exp_replays[dataset].update_td_error(td_error_indexes, np.abs(conv_loss_t.numpy().flatten()))
            
 
             # train fc
@@ -539,7 +541,7 @@ with tqdm(total=rl_iterations,
             td_error_indexes = batch_data['td_indexes']
             del batch_data['td_indexes']
             fc_loss_t = update_agent_fc(**batch_data)
-            fc_exp_replays[dataset].update_td_error(td_error_indexes, fc_loss_t.numpy().flatten())
+            fc_exp_replays[dataset].update_td_error(td_error_indexes, np.abs(fc_loss_t.numpy().flatten()))
            
 
         
@@ -560,14 +562,19 @@ with tqdm(total=rl_iterations,
 
             for idx, env in enumerate(envs):
                 dataset = dataset_names[idx]
+                logger.debug(f'Testing for dataset {dataset}.')
                 rw, acc, weights = play_and_record(conv_agent, fc_agent, env, conv_exp_replays[dataset], fc_exp_replays[dataset],run_id=run_id,test_number=i//10, dataset_name=dataset,save_name=test_filename, n_games=eval_n_samples, exploration=False)            
                 rw_history_tests[test_counter, idx] = rw
                 acc_history_tests[test_counter, idx] = acc
                 weights_history_tests[test_counter, idx] = weights
-                conv_target_agent.actor.save_weights(agents_path+'_conv_actor')
-                conv_target_agent.critic.save_weights(agents_path+'_conv_critic')
-                fc_target_agent.actor.save_weights(agents_path+'_fc_actor')
-                fc_target_agent.critic.save_weights(agents_path+'_fc_critic')
+                conv_agent.actor.save_weights(agents_path+'_conv_actor')
+                conv_agent.critic.save_weights(agents_path+'_conv_critic')
+                fc_agent.actor.save_weights(agents_path+'_fc_actor')
+                fc_agent.critic.save_weights(agents_path+'_fc_critic')
+                conv_target_agent.actor.save_weights(agents_path+'_conv_actor_target_agent')
+                conv_target_agent.critic.save_weights(agents_path+'_conv_critic_target_agent')
+                fc_target_agent.actor.save_weights(agents_path+'_fc_actor_target_agent')
+                fc_target_agent.critic.save_weights(agents_path+'_fc_critic_target_agent')
 
 
             t.postfix[0][2] = np.mean(rw_history_tests[test_counter])
@@ -618,7 +625,7 @@ with tqdm(total=rl_iterations,
                 ax3.plot(rw_history_tests[:test_counter, idx])
             ax3.legend(dataset_names)
             plt.xlabel('Epochs')
-            plt.savefig(f'./data/figures/{agent_name}_test_stats.png')
+            plt.savefig(figures_path+'_test_stats.png')
             plt.close()
 
         t.update()
@@ -629,5 +636,5 @@ with tqdm(total=rl_iterations,
         plt.legend(['conv', 'fc'])
         plt.ylabel("TD loss")
         plt.xlabel('Epochs')
-        plt.savefig(f'./data/figures/{agent_name}_td_loss.png')
+        plt.savefig(figures_path+'_td_loss.png')
         plt.close()
