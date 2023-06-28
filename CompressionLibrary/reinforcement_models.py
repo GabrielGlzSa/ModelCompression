@@ -82,9 +82,11 @@ class DQNAgent(Agent):
     
         return [best_action]
 
+
 class DuelingDQNAgent(Agent):
-    def __init__(self, **kwargs):
-        (super(DuelingDQNAgent, self).__init__)(**kwargs)
+    def __init__(self, epsilon, *args, **kwargs):
+        self.epsilon = epsilon
+        (super(DuelingDQNAgent, self).__init__)(*args,**kwargs)
 
     def model_creation(self, name, state_shape, n_actions, layer_type):
         if layer_type=='fc':
@@ -108,6 +110,29 @@ class DuelingDQNAgent(Agent):
           output = tf.keras.layers.Lambda(lambda inputs: inputs[0] + (inputs[1] - tf.math.reduce_mean(inputs[1], axis=1, keepdims=True)))([v,a])
         model = tf.keras.Model(inputs=input, outputs=output, name=name)
         return model
+
+    def get_qvalues(self, state):
+        qvalues = self.model(state)
+        return qvalues
+
+    def sample_actions(self, qvalues, exploration=True):
+
+        if exploration:
+            _, n_actions = qvalues.shape
+            random_action = np.random.choice(n_actions, size=1)[0]
+            best_actions = qvalues.argmax(axis=-1)
+            actions, counts = np.unique(best_actions, return_counts=True)
+            index = np.argmax(counts)
+            best_action = actions[index]
+            action = np.random.choice([best_action, random_action], size=1, p=[1 - self.epsilon, self.epsilon])
+            return action
+        else:
+            best_actions = qvalues.argmax(axis=-1)
+            actions, counts = np.unique(best_actions, return_counts=True)
+            index = np.argmax(counts)
+            best_action = actions[index]
+        
+            return [best_action]
 
 class DDPGWeights2D(Agent):
     def __init__(self, *args, **kwargs):
