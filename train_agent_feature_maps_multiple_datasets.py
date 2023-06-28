@@ -157,8 +157,7 @@ def create_environments(dataset_names):
             tuning_mode='layer', 
             current_state_source=current_state, 
             next_state_source=next_state, 
-            strategy=strategy, 
-            model_path=data_path)
+            strategy=strategy)
 
         environments.append(env)
 
