@@ -442,6 +442,8 @@ class EnvDiscreteUniqueActions(ModelCompressionEnv):
             test_acc_after = self.test_acc_before
             val_acc_after = self.val_acc_before
             weights_after = self.weights_previous_it
+            val_loss = None
+            test_loss = None
 
         self.logger.info(f'Val loss: {val_loss}\t Val acc:{val_acc_after}')
         self.logger.info(f'Test loss: {test_loss}\t Test acc:{test_acc_after}')
@@ -476,9 +478,9 @@ class EnvDiscreteUniqueActions(ModelCompressionEnv):
 
         return self._state, reward_all_steps, self._episode_ended, info
 
-class ModelCompressionSVDEnv(ModelCompressionEnv):
+class ModelCompressionSVDEnvContinous(ModelCompressionEnv):
     def __init__(self,*args, **kwargs):
-        (super(ModelCompressionSVDEnv, self).__init__)(*args,**kwargs)
+        (super(ModelCompressionSVDEnvContinous, self).__init__)(*args,**kwargs)
 
     def action_space(self):
         return {'low':0.01, 'high':1.0}
@@ -626,7 +628,7 @@ class ModelCompressionSVDEnv(ModelCompressionEnv):
 class ModelCompressionSVDIntEnv(ModelCompressionEnv):
     def __init__(self,*args, **kwargs):
         (super(ModelCompressionSVDIntEnv, self).__init__)(*args,**kwargs)
-        self.possible_actions = [5] + list(range(10,110,10))
+        self.possible_actions = [5] + list(range(10,100,20)) + [100]
 
     def action_space(self):
         return self.possible_actions
@@ -690,6 +692,11 @@ class ModelCompressionSVDIntEnv(ModelCompressionEnv):
         if self._layer_counter == len(self.layer_name_list):
             self.logger.debug('Episode ended.')
             self._episode_ended = True
+
+        if self.tuning_mode == 'layer':
+            train_layers = new_layers_it
+        else:
+            train_layers = self.layer_name_list
             
         if self.tuning_epochs>0 and (self.tuning_mode =='layer' or self._episode_ended): 
             self.logger.debug(f'Fine-tuning the model for {self.tuning_epochs} epochs in mode {self.tuning_mode}.')
@@ -702,25 +709,25 @@ class ModelCompressionSVDIntEnv(ModelCompressionEnv):
                     metric2 = tf.keras.metrics.SparseCategoricalAccuracy()
                     self.model = create_model_from_parts(layers, configs, weights, optimizer2, loss2, metric2, input_shape=self.input_shape)
 
-                    # for layer in self.model.layers:
-                    #     if layer.name == layer_name:
-                    #         layer.trainable = True
-                    #     else:
-                    #         layer.trainable = False
+                    for layer in self.model.layers:
+                        if layer.name in train_layers:
+                            layer.trainable = True
+                        else:
+                            layer.trainable = False
                     rbw = RestoreBestWeights(acc_before = self.val_acc_before, reward_func=self.reward_func,weights_before=self.weights_before, verbose=1)
                     self.model.fit(self.train_ds, epochs=self.tuning_epochs, callbacks=[rbw], validation_data=self.validation_ds, verbose=self.verbose)
-                    # for layer in self.model.layers:
-                    #     layer.trainable = True
+                    for layer in self.model.layers:
+                        layer.trainable = True
             else:
-                # for layer in self.model.layers:
-                #     if layer.name == layer_name:
-                #         layer.trainable = True
-                #     else:
-                #         layer.trainable = False
+                for layer in self.model.layers:
+                    if layer.name == layer_name:
+                        layer.trainable = True
+                    else:
+                        layer.trainable = False
                 rbw = RestoreBestWeights(acc_before = self.val_acc_before, reward_func=self, weights_before=self.weights_before, verbose=1)
                 self.model.fit(self.train_ds, epochs=self.tuning_epochs, callbacks=[rbw], validation_data=self.validation_ds, verbose=self.verbose)
-                # for layer in self.model.layers:
-                #     layer.trainable = True
+                for layer in self.model.layers:
+                    layer.trainable = True
             
 
         if self.strategy:
