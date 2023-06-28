@@ -1,6 +1,6 @@
 from asyncio.log import logger
 import tensorflow as tf
-from CompressionLibrary.environments import ModelCompressionEnv
+from CompressionLibrary.environments import *
 import pandas as pd
 import numpy as np
 import gc
@@ -10,7 +10,7 @@ import sys
 
 
 
-def make_env_adadeep(create_model, reward_func, train_ds, valid_ds, test_ds, input_shape, layer_name_list, num_feature_maps, tuning_batch_size, tuning_epochs, verbose=0, get_state_from='train',tuning_mode='layer', current_state_source='layer_input', next_state_source='layer_output', strategy=None, model_path='./data'):
+def make_env_adadeep(create_model, reward_func, train_ds, valid_ds, test_ds, input_shape, layer_name_list, num_feature_maps, tuning_batch_size, tuning_epochs, verbose=0, get_state_from='train',tuning_mode='layer', current_state_source='layer_input', next_state_source='layer_output', strategy=None):
 
     w_comprs = ['InsertDenseSVD', 'InsertDenseSparse',
                 'DeepCompression'] 
@@ -38,7 +38,7 @@ def make_env_adadeep(create_model, reward_func, train_ds, valid_ds, test_ds, inp
     parameters['SparseConnectionsCompression'] = {'layer_name': None, 
                                                   'target_perc': 0.75, 'conn_perc_per_epoch': 0.15}
 
-    env = ModelCompressionEnv(compressors_list=compressors_list, 
+    env = EnvDiscreteUniqueActions(compressors_list=compressors_list, 
                                     create_model_func=create_model, 
                                     compr_params=parameters, 
                                     train_ds=train_ds, 
@@ -55,8 +55,7 @@ def make_env_adadeep(create_model, reward_func, train_ds, valid_ds, test_ds, inp
                                     next_state_source=next_state_source, 
                                     num_feature_maps=num_feature_maps, 
                                     verbose=verbose,
-                                    strategy=strategy, 
-                                    model_path=model_path)
+                                    strategy=strategy)
     return env
 
 
