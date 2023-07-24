@@ -310,6 +310,7 @@ class PrioritizedExperienceReplayBuffer(object):
 
     def add_multiple(self, s, a, r, s_next, td_error, done):
         batch_size = s.shape[0]
+        
         for i in range(batch_size):
             self.add(s[i], a[i], r[i], s_next[i], td_error[i], done[i])
 
@@ -322,7 +323,7 @@ class PrioritizedExperienceReplayBuffer(object):
         self.logger.debug(f'Mean TD error before: {td_error_before}')
         self.logger.debug(f'Mean TD error after: {np.mean(self._td_error[indexes])}')
 
-    def sample(self, batch_size):
+    def sample(self, batch_size, highest_td_error=True):
         length_storage = len(self._storage)
         self.logger.debug(f'Next index is {self._next_idx}.')
         self.logger.debug(f'Replay buffer size is {length_storage}.')
@@ -330,7 +331,9 @@ class PrioritizedExperienceReplayBuffer(object):
             td_error = self._td_error[:]
             self.logger.debug(f'TD error lenght is {len(td_error)}.')
             td_error_sorted_idx = np.argsort(td_error)
-            td_error_sorted_idx = np.flip(td_error_sorted_idx)
+            if highest_td_error:
+                td_error_sorted_idx = np.flip(td_error_sorted_idx)
+
             probabilities = np.empty_like(td_error_sorted_idx, dtype=np.float32)
             probabilities[td_error_sorted_idx] = list(range(1, length_storage+1)) 
             probabilities = 1 / np.power(probabilities, self.alpha)
