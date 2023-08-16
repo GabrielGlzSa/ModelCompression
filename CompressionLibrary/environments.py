@@ -114,6 +114,7 @@ class ModelCompressionEnv():
             self.logger.info(f'Val accuracy is {self.val_acc_before} and loss {val_loss}')
 
         self.test_acc_previous_it = self.test_acc_before
+        self.val_acc_previous_it = self.val_acc_before
         self.logger.info('Finished environment initialization.')
 
     def get_highest_num_filters(self):
@@ -233,7 +234,7 @@ class ModelCompressionEnv():
                 retrieving = self.next_state_source
                 if self.next_state_source == 'layer_input':
                     layer_idx = names.index(
-                        self.layer_name_list[self._layer_counter]) - 1
+                        self.layer_name_list[self._layer_counter]) + 1
                 elif self.next_state_source == 'layer_output':
                     layer_idx = names.index(
                         self.layer_name_list[self._layer_counter])
@@ -383,7 +384,7 @@ class EnvDiscreteUniqueActions(ModelCompressionEnv):
 
 
         if self.tuning_mode == 'layer':
-                train_layers = new_layers_it
+            train_layers = new_layers_it
         else:
             train_layers = self.layer_name_list
 
@@ -503,7 +504,7 @@ class ModelCompressionSVDEnvContinous(ModelCompressionEnv):
 
         weights_before = self.weights_previous_it
         if action == 1.0:
-            val_acc_after = self.val_acc_before
+            val_acc_after = self.val_acc_previous_it
             test_acc_after = self.test_acc_previous_it
             self.logger.debug(f'Layer {layer_name} was not compressed.')
             self.chosen_actions.append(action)
@@ -576,27 +577,27 @@ class ModelCompressionSVDEnvContinous(ModelCompressionEnv):
                 # for layer in self.model.layers:
                 #     layer.trainable = True
             
+        if self._episode_ended:
+            if self.strategy:
+                self.logger.debug('Strategy found. Using strategy to evaluate model.')
 
-        if self.strategy:
-            self.logger.debug('Strategy found. Using strategy to evaluate model.')
+                # Extract core info of model to create another inside scope.
+                layers, configs, weights = extract_model_parts(self.model)
 
-            # Extract core info of model to create another inside scope.
-            layers, configs, weights = extract_model_parts(self.model)
-
-            with self.strategy.scope():
-                optimizer2 = tf.keras.optimizers.Adam(1e-5)
-                loss2 = tf.keras.losses.SparseCategoricalCrossentropy()
-                metric2 = tf.keras.metrics.SparseCategoricalAccuracy()
-                self.model = create_model_from_parts(layers, configs, weights, optimizer2, loss2, metric2, input_shape=self.input_shape)
-                test_loss, test_acc_after = self.model.evaluate(self.test_ds, verbose=self.verbose)
-                val_loss, val_acc_after = self.model.evaluate(self.validation_ds, verbose=self.verbose)
-        else:
-            if action < 1.0:
-                test_loss, test_acc_after = self.model.evaluate(self.test_ds, verbose=self.verbose)
-                val_loss, val_acc_after = self.model.evaluate(self.validation_ds, verbose=self.verbose)
+                with self.strategy.scope():
+                    optimizer2 = tf.keras.optimizers.Adam(1e-5)
+                    loss2 = tf.keras.losses.SparseCategoricalCrossentropy()
+                    metric2 = tf.keras.metrics.SparseCategoricalAccuracy()
+                    self.model = create_model_from_parts(layers, configs, weights, optimizer2, loss2, metric2, input_shape=self.input_shape)
+                    test_loss, test_acc_after = self.model.evaluate(self.test_ds, verbose=self.verbose)
+                    val_loss, val_acc_after = self.model.evaluate(self.validation_ds, verbose=self.verbose)
             else:
-                test_acc_after = self.test_acc_previous_it
-                val_acc_after = self.val_acc_before
+                if action < 1.0:
+                    test_loss, test_acc_after = self.model.evaluate(self.test_ds, verbose=self.verbose)
+                    val_loss, val_acc_after = self.model.evaluate(self.validation_ds, verbose=self.verbose)
+                else:
+                    test_acc_after = self.test_acc_previous_it
+                    val_acc_after = self.val_acc_before
 
         weights_after = calculate_model_weights(self.model)
 
@@ -628,7 +629,7 @@ class ModelCompressionSVDEnvContinous(ModelCompressionEnv):
 class ModelCompressionSVDIntEnv(ModelCompressionEnv):
     def __init__(self,*args, **kwargs):
         (super(ModelCompressionSVDIntEnv, self).__init__)(*args,**kwargs)
-        self.possible_actions = [5] + list(range(10,100,20)) + [100]
+        self.possible_actions = [5] + list(range(10,100,10)) + [100]
 
     def action_space(self):
         return self.possible_actions
@@ -652,8 +653,8 @@ class ModelCompressionSVDIntEnv(ModelCompressionEnv):
         weights_before = self.weights_previous_it
         action = self.possible_actions[action]
         if action == 100 :
-            val_acc_after = self.val_acc_before
-            test_acc_after = self.test_acc_before
+            val_acc_after = self.val_acc_previous_it
+            test_acc_after = self.test_acc_previous_it
             self.logger.debug(f'Layer {layer_name} was not compressed.')
             self.chosen_actions.append(action)
 
@@ -688,15 +689,20 @@ class ModelCompressionSVDIntEnv(ModelCompressionEnv):
         self._layer_counter += 1
             
 
+        if self.tuning_mode == 'layer':
+            train_layers = new_layers_it
+        else:
+            train_layers = self.layer_name_list
+            
+
 
         if self._layer_counter == len(self.layer_name_list):
             self.logger.debug('Episode ended.')
             self._episode_ended = True
 
-        if self.tuning_mode == 'layer':
-            train_layers = new_layers_it
-        else:
-            train_layers = self.layer_name_list
+        if self._episode_ended:
+            train_layers.append(self.model.layers[-1].name)
+               
             
         if self.tuning_epochs>0 and (self.tuning_mode =='layer' or self._episode_ended): 
             self.logger.debug(f'Fine-tuning the model for {self.tuning_epochs} epochs in mode {self.tuning_mode}.')
@@ -729,36 +735,44 @@ class ModelCompressionSVDIntEnv(ModelCompressionEnv):
                 for layer in self.model.layers:
                     layer.trainable = True
             
+        if self._episode_ended:
+            if self.strategy:
+                self.logger.debug('Strategy found. Using strategy to evaluate model.')
 
-        if self.strategy:
-            self.logger.debug('Strategy found. Using strategy to evaluate model.')
+                # Extract core info of model to create another inside scope.
+                layers, configs, weights = extract_model_parts(self.model)
 
-            # Extract core info of model to create another inside scope.
-            layers, configs, weights = extract_model_parts(self.model)
-
-            with self.strategy.scope():
-                optimizer2 = tf.keras.optimizers.Adam(1e-5)
-                loss2 = tf.keras.losses.SparseCategoricalCrossentropy()
-                metric2 = tf.keras.metrics.SparseCategoricalAccuracy()
-                self.model = create_model_from_parts(layers, configs, weights, optimizer2, loss2, metric2, input_shape=self.input_shape)
-                test_loss, test_acc_after = self.model.evaluate(self.test_ds, verbose=self.verbose)
-                val_loss, val_acc_after = self.model.evaluate(self.validation_ds, verbose=self.verbose)
-        else:
-            if action != 0:
-                test_loss, test_acc_after = self.model.evaluate(self.test_ds, verbose=self.verbose)
-                val_loss, val_acc_after = self.model.evaluate(self.validation_ds, verbose=self.verbose)
+                with self.strategy.scope():
+                    optimizer2 = tf.keras.optimizers.Adam(1e-5)
+                    loss2 = tf.keras.losses.SparseCategoricalCrossentropy()
+                    metric2 = tf.keras.metrics.SparseCategoricalAccuracy()
+                    self.model = create_model_from_parts(layers, configs, weights, optimizer2, loss2, metric2, input_shape=self.input_shape)
+                    test_loss, test_acc_after = self.model.evaluate(self.test_ds, verbose=self.verbose)
+                    val_loss, val_acc_after = self.model.evaluate(self.validation_ds, verbose=self.verbose)
             else:
-                test_acc_after = self.test_acc_before
-                val_acc_after = self.val_acc_before
+                if action != 0:
+                    test_loss, test_acc_after = self.model.evaluate(self.test_ds, verbose=self.verbose)
+                    val_loss, val_acc_after = self.model.evaluate(self.validation_ds, verbose=self.verbose)
+                else:
+                    test_acc_after = self.test_acc_before
+                    val_acc_after = self.val_acc_before
+        else:
+            test_acc_after = None
+            val_acc_after = None
 
         weights_after = calculate_model_weights(self.model)
 
  
         if self._episode_ended:
-            stats = {'weights_before': self.weights_before, 'weights_after':weights_after, 'accuracy_after': test_acc_after}
+            stats = {
+                'weights_before': self.weights_before, 
+                'weights_after': weights_after, 
+                'accuracy_after': test_acc_after, 
+                'accuracy_before': self.test_acc_before}
+
             reward = self.reward_func(stats)
         else: 
-            reward = 0
+            reward = 0.0
         
         self.weights_previous_it = weights_after
 
