@@ -173,8 +173,7 @@ class ReplayBufferMultipleDatasets(object):
 
 
 class PrioritizedExperienceReplayBufferMultipleDatasets(object):
-    def __init__(self, size, alpha=1):
-        
+    def __init__(self, size, dataset_names, alpha=1.0):
         self.dataset_names = sorted(dataset_names)
         self.num_datasets = len(self.dataset_names)
         self._storage = dict(zip(self.dataset_names, map(lambda x: [], self.dataset_names)))
@@ -184,10 +183,10 @@ class PrioritizedExperienceReplayBufferMultipleDatasets(object):
         self.alpha = alpha
         self._maxsize = size
         self.logger = logging.getLogger(__name__)
-        self.idx_dict = dict(zip(self.dataset_names, range(self.num_datasets)))
+        self.idx_datasets = dict(zip(self.dataset_names, range(self.num_datasets)))
 
     def __len__(self):
-        return np.sum(list(map(lambda x: len(self._storage[x]), self.num_datasets)))
+        return np.sum(list(map(lambda x: len(self._storage[x]), self.dataset_names)))
 
     def __str__(self) -> str:
         msg = ''
@@ -199,83 +198,97 @@ class PrioritizedExperienceReplayBufferMultipleDatasets(object):
         return msg
         
     def add(self, s, a, r, s_next, td_error, done, dataset_name):
-        data_idx = self.idx_dict[dataset_name]
+        dataset_idx = self.idx_datasets[dataset_name]
+        next_idx = self._next_idx[dataset_idx]
         data = (s, a, r, s_next, done)
-        if self._next_idx[data_idx] >= len(self._storage[dataset_name]):
+        if self._next_idx[dataset_idx] >= len(self._storage[dataset_name]):
             self._storage[dataset_name].append(data)
         else:
-            self._storage[dataset_name][self._next_idx[data_idx]] = data
-        self._td_error[data_idx, self._next_idx[data_idx]] = td_error
-        self._next_idx[data_idx] = (self._next_idx[data_idx]+1) % self._maxsize
+            self._storage[dataset_name][next_idx] = data
+        self._td_error[dataset_idx, next_idx] = td_error
+        self._next_idx[dataset_idx] = (next_idx+1) % self._maxsize
 
     def add_multiple(self, s, a, r, s_next, td_error, done, dataset_name):
         batch_size = s.shape[0]
+        self.logger.debug(f'Inserting {batch_size} examples.')
         for i in range(batch_size):
             self.add(s[i], a[i], r[i], s_next[i], td_error[i], done[i], dataset_name)
 
     def update_td_error(self, mixed_indexes, td_errors):
+        start = 0
+        end = 0
         for d_idx, indexes in enumerate(mixed_indexes):
+            step = len(indexes)
             self._times_selected[d_idx, indexes] =  self._times_selected[d_idx, indexes] + 1
             # self.logger.debug(f'TD errors before: {self._td_error[indexes]}')
             td_error_before = np.mean(self._td_error[d_idx, indexes])
-            self._td_error[d_idx, indexes] = td_errors
+            self._td_error[d_idx, indexes] = td_errors[start:start+step]
+            start += step
             # self.logger.debug(f'TD errors after: {self._td_error[indexes]}')
-            self.logger.debug(f'Mean TD error before: {td_error_before}')
-            self.logger.debug(f'Mean TD error after: {np.mean(self._td_error[d_idx, indexes])}')
+            self.logger.debug(f'Dataset {self.dataset_names[d_idx]} mean TD error before: {td_error_before}')
+            self.logger.debug(f'Dataset {self.dataset_names[d_idx]} mean TD error after: {np.mean(self._td_error[d_idx, indexes])}')
 
-    def sample(self, batch_size):
-        length_storage = len(self._storage)
-        self.logger.debug(f'Next index are {self._next_idx}.')
-        self.logger.debug(f'Replay buffer size is {length_storage}.')
-        if self._next_idx < length_storage:
-            td_error = self._td_error[:]
-            self.logger.debug(f'TD error lenght is {len(td_error)}.')
-            td_error_sorted_idx = np.argsort(td_error)
-            td_error_sorted_idx = np.flip(td_error_sorted_idx)
-            probabilities = np.empty_like(td_error_sorted_idx, dtype=np.float32)
-            probabilities[td_error_sorted_idx] = list(range(1, length_storage+1)) 
-            probabilities = 1 / np.power(probabilities, self.alpha)
-            probabilities = probabilities / np.sum(probabilities)
-            if batch_size < length_storage:
-                batch = np.random.choice(length_storage, batch_size, p=probabilities, replace=False)
-            else:
-                batch = np.random.choice(length_storage, length_storage, p=probabilities, replace=False)
-        else:
-            td_error = self._td_error[:self._next_idx]
-            length_storage = self._next_idx
-            self.logger.debug(f'TD error lenght is {len(td_error)}.')
-            td_error_sorted_idx = np.argsort(td_error)
-            td_error_sorted_idx = np.flip(td_error_sorted_idx)
-            probabilities = np.empty_like(td_error_sorted_idx, dtype=np.float32)
-            probabilities[td_error_sorted_idx] = list(range(1, length_storage+1)) 
-            probabilities = 1 / np.power(probabilities, self.alpha)
-            probabilities = probabilities / np.sum(probabilities)
-            if batch_size < length_storage:
-                batch = np.random.choice(length_storage, batch_size, p=probabilities, replace=False)
-            else:
-                batch = np.random.choice(length_storage, length_storage, p=probabilities, replace=False)
+    def sample(self, batch_size, highest_td_error=True):
 
-        
+        recommended_batch_size = batch_size//self.num_datasets
+        accumulated_batch_size = 0            
+
         s, a, r, s_next, done = [], [], [], [], []
-        for i in batch:
-            s_temp, a_temp, r_temp, sn_temp, done_temp = self._storage[i]
-            s.append(s_temp)
-            a.append(a_temp)
-            r.append(r_temp)
-            s_next.append(sn_temp)
-            done.append(done_temp)
+        probs = []
+        batch_idx = []
+        for dataset_name in self._storage.keys():
+            
+            if accumulated_batch_size + recommended_batch_size > batch_size:
+                recommended_batch_size = batch_size - accumulated_batch_size
+            accumulated_batch_size += recommended_batch_size
 
-        probs = probabilities[batch]
-        done = np.asarray(done, dtype=np.float32)
-        
+            dataset_idx = self.idx_datasets[dataset_name]
+            next_idx = self._next_idx[dataset_idx]
+            self.logger.debug(f'Next index is {next_idx}.')
+            num_elements = len(self._storage[dataset_name])
+            self.logger.debug(f'{dataset_name} has {num_elements} replay samples.')
+            if next_idx < num_elements:
+                idx_end = num_elements
+            else:
+                idx_end = next_idx
+
+            td_error = self._td_error[dataset_idx, :idx_end]
+            td_error_sorted_idx = np.argsort(td_error)
+            if highest_td_error:
+                td_error_sorted_idx = np.flip(td_error_sorted_idx)
+            
+            probabilities = np.empty_like(td_error_sorted_idx, dtype=np.float32)
+            probabilities[td_error_sorted_idx] = list(range(1, idx_end+1))
+            probabilities = 1 / np.power(probabilities, self.alpha)
+            probabilities = probabilities / np.sum(probabilities)
+
+            if batch_size < num_elements:
+                n_batch_size = recommended_batch_size
+            else:
+                n_batch_size = num_elements
+
+            batch = np.random.choice(num_elements, n_batch_size, p=probabilities, replace=False)
+
+            batch_idx.append(batch) 
+
+            for i in batch:
+                s_temp, a_temp, r_temp, sn_temp, done_temp = self._storage[dataset_name][i]
+                s.append(s_temp)
+                a.append(a_temp)
+                r.append(r_temp)
+                s_next.append(sn_temp)
+                done.append(done_temp)
+                probs.append(probabilities[i])
+
         return (tf.ragged.stack(s),
-                tf.convert_to_tensor(a),
-                tf.convert_to_tensor(r),
-                tf.ragged.stack(s_next),
-                done,
-                tf.convert_to_tensor(probs),
-                batch)
+            tf.convert_to_tensor(a),
+            tf.convert_to_tensor(r),
+            tf.ragged.stack(s_next),
+            tf.cast(tf.convert_to_tensor(done), dtype=tf.float32),
+            tf.convert_to_tensor(probs),
+            batch_idx)
 
+            
 
 class PrioritizedExperienceReplayBuffer(object):
     def __init__(self, size, alpha=1):
@@ -294,7 +307,6 @@ class PrioritizedExperienceReplayBuffer(object):
         msg = ''
         for s, a, r, s_next, done in self._storage:
             msg+=f'{s.shape}, {a}, {r}, {s_next.shape}, {done}\n'
-
         return msg
         
 
@@ -310,7 +322,7 @@ class PrioritizedExperienceReplayBuffer(object):
 
     def add_multiple(self, s, a, r, s_next, td_error, done):
         batch_size = s.shape[0]
-        
+        self.logger.debug(f'Inserting {batch_size} examples.')
         for i in range(batch_size):
             self.add(s[i], a[i], r[i], s_next[i], td_error[i], done[i])
 
