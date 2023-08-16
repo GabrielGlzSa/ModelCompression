@@ -7,10 +7,10 @@ import tensorflow_datasets as tfds
 import logging
 
 from CompressionLibrary.environments import ModelCompressionSVDIntEnv
-from CompressionLibrary.reinforcement_models import DuelingDQNAgent
-from CompressionLibrary.replay_buffer import PrioritizedExperienceReplayBuffer
+from CompressionLibrary.reinforcement_models import DuelingDQNAgentBigger as DuelingDQNAgent
+from CompressionLibrary.replay_buffer import PrioritizedExperienceReplayBufferMultipleDatasets
 from CompressionLibrary.utils import calculate_model_weights
-from CompressionLibrary.reward_functions import reward_MnasNet as calculate_reward
+from CompressionLibrary.reward_functions import reward_MnasNet_penalty as calculate_reward
 
 from uuid import uuid4
 from datetime import datetime
@@ -23,8 +23,8 @@ from functools import partial
 import gc
 
 
-dataset_names = ['mnist']
-agent_name = 'DDQN_discrete_a_FM_' + '-'.join(dataset_names)
+dataset_names = ['fashion_mnist','mnist']#['fashion_mnist','kmnist','mnist']
+agent_name = 'DDQN_discrete_tuning_zero_rw_FM_' + '-'.join(dataset_names)
 run_id = datetime.now().strftime('%Y-%m-%d-%H-%M%S-') + str(uuid4())
 
 try:
@@ -61,28 +61,48 @@ agents_path = data_path+f'/agents/DDQN/checkpoints/LeNet_{agent_name}'
 figures_path = data_path+f'/figures/{agent_name}'
 
 
+# Parameters shared in training and testing env
 current_state = 'layer_input'
 next_state = 'layer_output'
-state_set_source = 'train'
+tuning_epochs = 100
+tuning_mode = 'final'
+
+batch_size_per_replica = 128
+tuning_batch_size = batch_size_per_replica * strategy.num_replicas_in_sync
 
 
-replay_buffer_size = 10 ** 6
+# Env variables
+training_state_set_source = 'validation'
+training_num_feature_maps = 128
+
+
+# Testing variables
+testing_state_set_source = 'test'
+testing_num_feature_maps = -1
+eval_n_samples = 1
+test_frequency_epochs = 20 # Test every 20 epochs.
+
+
+# Replay variables
+replay_buffer_size = 1000000
+
+# RL training variables
 
 verbose = 0
-rl_iterations = 10000
+rl_iterations = 2000
 update_weights_iterations = 10
-eval_n_samples = 1
-num_feature_maps = 256
-batch_size_per_replica = 64
-tuning_batch_size = batch_size_per_replica * strategy.num_replicas_in_sync
-rl_batch_size = tuning_batch_size
-tuning_epochs = 0
-tuning_mode = 'layer'
+rl_batch_size = 128
 gamma = 0.99
-beta = 1.0
-tau = 0.005
+beta = 0.5
 learning_rate = 1e-5
 epsilon_start_value = 1.0
+min_epsylon = 0.1
+copy_weights_frequency = 100
+
+# For 4000 training epochs.
+# epsylon_decay = 0.9997 #for 4000
+# For 2000 training epochs.
+epsylon_decay = 0.999
 
 
 layer_name_list = ['conv2d_1',  'dense', 'dense_1']
@@ -146,7 +166,7 @@ def load_dataset(dataset_name, batch_size=128):
 
 input_shape = (28,28,1)
 
-def create_environments(dataset_names):
+def create_environments(dataset_names, num_feature_maps, state_set_source):
     w_comprs = ['InsertDenseSVD'] 
     l_comprs = ['MLPCompression']
     compressors_list = w_comprs +  l_comprs
@@ -175,13 +195,16 @@ def create_environments(dataset_names):
                 next_state_source=next_state, 
                 num_feature_maps=num_feature_maps, 
                 verbose=verbose,
+                tuning_mode=tuning_mode,
                 strategy=strategy)
 
         environments.append(env)
 
     return environments
 
-envs = create_environments(dataset_names)
+envs = create_environments(dataset_names,num_feature_maps=training_num_feature_maps, state_set_source=training_state_set_source)
+test_envs = create_environments(dataset_names,num_feature_maps=testing_num_feature_maps, state_set_source=testing_state_set_source)
+
 conv_shape, dense_shape = envs[0].observation_space()
 action_space = envs[0].action_space()
 num_actions = len(action_space)
@@ -194,14 +217,6 @@ fc_n_actions = conv_n_actions = num_actions
 print(f'The action space is {action_space}')
 
 
-@tf.function
-def update_target(target_weights, weights, tau):
-    for (a, b) in zip(target_weights, weights):
-        a.assign(b * tau + a * (1 - tau))
-
-
-
-
 with strategy.scope():
     fc_agent = DuelingDQNAgent(name="ddqn_agent_fc", state_shape=dense_shape,
                         n_actions=fc_n_actions, epsilon=epsilon_start_value, layer_type='fc')
@@ -212,12 +227,15 @@ with strategy.scope():
 
     conv_agent = DuelingDQNAgent(
         name="ddqn_agent_conv", state_shape=conv_shape, n_actions=conv_n_actions, epsilon=epsilon_start_value, layer_type='cnn')
-    conv_target_network = DuelingDQNAgent(
-        name="target_conv", state_shape=conv_shape, n_actions=conv_n_actions, epsilon=epsilon_start_value,layer_type='cnn')
+    # conv_target_network = DuelingDQNAgent(
+    #     name="target_conv", state_shape=conv_shape, n_actions=conv_n_actions, epsilon=epsilon_start_value,layer_type='cnn')
 
     try:
-        conv_agent.model.load_weights(agents_path+'_conv_agent.ckpt')
-        fc_agent.model.load_weights(agents_path+'_fc_agent.ckpt')
+        fc_agent.model.load_weights(agents_path+'_fc.cpkt')
+        fc_target_network.model.load_weights(agents_path+'_fc_target.cpkt')
+
+        conv_agent.model.load_weights(agents_path+'_conv.cpkt')
+        # conv_target_network.model.load_weights(agents_path+'_conv_target.ckpt')
     except:
         print('Failed to find pretrained models for the RL agents.')
         pass
@@ -237,10 +255,10 @@ def update_agent_fc(state_batch, action_batch, reward_batch, next_state_batch, d
     with tf.GradientTape() as tape:
         q_values = fc_agent.get_qvalues(state_batch)
         selected_action_qvalues = tf.reduce_sum(tf.multiply(q_values, masks), axis=1)
-        td_error = reference_qvalues - selected_action_qvalues
-        deltai = tf.math.square(td_error)
+        td_error = tf.abs(reference_qvalues - selected_action_qvalues)
+        deltai = td_error
         importance_sampling = 1 / (replay_buffer_size** beta * sample_probabilities**beta)
-        td_loss = tf.math.reduce_mean((importance_sampling*deltai)**2)
+        td_loss = tf.math.reduce_mean((importance_sampling*deltai))
 
     gradients = tape.gradient(td_loss, fc_agent.model.trainable_weights)
     optimizer_fc.apply_gradients(zip(gradients, fc_agent.model.trainable_weights))
@@ -248,19 +266,20 @@ def update_agent_fc(state_batch, action_batch, reward_batch, next_state_batch, d
 
 @tf.function
 def update_agent_conv(state_batch, action_batch, reward_batch, next_state_batch, done, sample_probabilities):
-    agent_best_actions = tf.cast(tf.math.argmax(conv_agent.get_qvalues(next_state_batch), axis=1), tf.int32)
+    agent_best_actions = tf.cast(tf.math.argmax(fc_agent.get_qvalues(next_state_batch), axis=1), tf.int32)
     indices = tf.stack([tf.range(state_batch.shape[0]), agent_best_actions], axis=1)
-    target_agent_qvalues = tf.gather_nd(conv_target_network.get_qvalues(next_state_batch), indices=indices)
+    target_agent_qvalues = tf.gather_nd(fc_target_network.get_qvalues(next_state_batch), indices=indices)
     reference_qvalues = reward_batch + gamma * target_agent_qvalues * (1.0 - done)
 
     masks = tf.one_hot(action_batch, num_actions)
     with tf.GradientTape() as tape:
         q_values = conv_agent.get_qvalues(state_batch)
         selected_action_qvalues = tf.reduce_sum(tf.multiply(q_values, masks), axis=1)
-        td_error = reference_qvalues - selected_action_qvalues
-        deltai = tf.math.square(td_error)
+        td_error = tf.abs(reference_qvalues - selected_action_qvalues)
+        deltai = td_error
         importance_sampling = 1 / (replay_buffer_size** beta * sample_probabilities**beta)
-        td_loss = tf.math.reduce_mean((importance_sampling*deltai)**2)
+        td_loss = tf.math.reduce_mean((importance_sampling*deltai))
+
 
     gradients = tape.gradient(td_loss, conv_agent.model.trainable_weights)
     optimizer_conv.apply_gradients(zip(gradients, conv_agent.model.trainable_weights))
@@ -276,9 +295,9 @@ td_loss_history_conv = []
 td_loss_history_fc = []
 
 
-def sample_batch(exp_replay, batch_size):
+def sample_batch(exp_replay, batch_size, highest_td_error):
     obs_batch, act_batch, reward_batch, next_obs_batch, done, probs, td_indexes = exp_replay.sample(
-        batch_size)
+        batch_size, highest_td_error=highest_td_error)
     return {
         'state_batch': tf.cast(obs_batch.to_tensor(), tf.float32),
         'action_batch': tf.cast(act_batch, tf.int32),
@@ -289,22 +308,33 @@ def sample_batch(exp_replay, batch_size):
         'td_indexes': td_indexes
     }
     
-def calculate_td_error(agent, target_agent, state_batch, action_batch, reward_batch, next_state_batch, done):
-    agent_best_actions = tf.cast(tf.math.argmax(agent.get_qvalues(next_state_batch), axis=1), tf.int32)
-    logger.debug(f'Best action for next state is {tf.math.reduce_mean(agent_best_actions)}.')
+
+def calculate_td_error_conv(state_batch, action_batch, reward_batch, next_state_batch, done):
+    agent_best_actions = tf.cast(tf.math.argmax(fc_agent.get_qvalues(next_state_batch), axis=1), tf.int32)
+    logger.debug(f"Action for S: {tf.reduce_mean(action_batch)}. Action for S': {tf.math.reduce_mean(agent_best_actions)}.")
     indices = tf.stack([tf.range(state_batch.shape[0]), agent_best_actions], axis=1)
-    target_agent_qvalues = tf.gather_nd(target_agent.get_qvalues(next_state_batch), indices=indices)
-    logger.debug(f'Target agent has {target_agent_qvalues} qvalue for next state.')
+    target_agent_qvalues = tf.gather_nd(fc_target_network.get_qvalues(next_state_batch), indices=indices)
     reference_qvalues = reward_batch + gamma * target_agent_qvalues * (1.0 - done)
-    logger.debug(f'Reference qvalues are {reference_qvalues}')
     masks = tf.one_hot(action_batch, num_actions)
-    q_values = agent.get_qvalues(state_batch)
-    logger.debug(f'Agent has {q_values} qvalues.')
+    q_values = conv_agent.get_qvalues(state_batch)
+    logger.debug(f"R + gamma * Q'(S') - Q(S)")
     selected_action_qvalues = tf.reduce_sum(tf.multiply(q_values, masks), axis=1)
-    logger.debug(f'Selected actions qvalues are {q_values}.')
     td_error = (reference_qvalues - selected_action_qvalues)
+    logger.debug(f'{tf.reduce_mean(reward_batch)} + {gamma} * {tf.reduce_mean(target_agent_qvalues * (1.0 - done))} - {tf.reduce_mean(selected_action_qvalues)} = {tf.reduce_mean(td_error)}')
+    return td_error
 
-
+def calculate_td_error_fc(state_batch, action_batch, reward_batch, next_state_batch, done):
+    agent_best_actions = tf.cast(tf.math.argmax(fc_agent.get_qvalues(next_state_batch), axis=1), tf.int32)
+    logger.debug(f"Action for S: {tf.reduce_mean(action_batch)}. Action for S': {tf.math.reduce_mean(agent_best_actions)}.")
+    indices = tf.stack([tf.range(state_batch.shape[0]), agent_best_actions], axis=1)
+    target_agent_qvalues = tf.gather_nd(fc_target_network.get_qvalues(next_state_batch), indices=indices)
+    reference_qvalues = reward_batch + gamma * target_agent_qvalues * (1.0 - done)
+    masks = tf.one_hot(action_batch, num_actions)
+    q_values = fc_agent.get_qvalues(state_batch)
+    logger.debug(f"R + gamma * Q'(S') - Q(S)")
+    selected_action_qvalues = tf.reduce_sum(tf.multiply(q_values, masks), axis=1)
+    td_error = (reference_qvalues - selected_action_qvalues)
+    logger.debug(f'{tf.reduce_mean(reward_batch)} + {gamma} * {tf.reduce_mean(target_agent_qvalues * (1.0 - done))} - {tf.reduce_mean(selected_action_qvalues)} = {tf.reduce_mean(td_error)}')
     return td_error
 
 def play_and_record(conv_agent, fc_agent,env, conv_replay, fc_replay,run_id, test_number, dataset_name, save_name, n_games=10, exploration=True):
@@ -323,17 +353,18 @@ def play_and_record(conv_agent, fc_agent,env, conv_replay, fc_replay,run_id, tes
         start = datetime.now()
         last_conv_data = None
         skip_add_replay = False
-        for k in range(1, len(env.layer_name_list)+1):
+        data = []
+        for k in range(1, len(env.original_layer_name_list)+1):
             tf.keras.backend.clear_session()
             # Get the current layer name
-            current_layer_name = env.layer_name_list[env._layer_counter]
+            current_layer_name = env.original_layer_name_list[env._layer_counter]
             # Get the layer.
             layer = env.model.get_layer(current_layer_name)
 
-            if env._layer_counter+1<len(env.layer_name_list):
+            if env._layer_counter+1<len(env.original_layer_name_list):
                 
                 # Get the next layer name
-                next_layer_name = env.layer_name_list[env._layer_counter+1]
+                next_layer_name = env.original_layer_name_list[env._layer_counter+1]
                 # Get the layer.
                 next_layer = env.model.get_layer(next_layer_name)
                 if isinstance(layer, tf.keras.layers.Conv2D) and not isinstance(next_layer, tf.keras.layers.Conv2D):
@@ -358,59 +389,52 @@ def play_and_record(conv_agent, fc_agent,env, conv_replay, fc_replay,run_id, tes
             logger.debug(f'Action for layer {current_layer_name} layer is {action}')
 
             # Apply action
-            new_s, r, done, info = env.step(action)
+            new_s, r, done, info = env.step(action) 
 
-
-            logger.debug(f'Iteration {it} - Layer {current_layer_name} {k}/{len(env.layer_name_list)}\tChosen action {action} has {r} reward.')
+            logger.debug(f'Iteration {it} - Layer {current_layer_name} {k}/{len(env.original_layer_name_list)}\tChosen action {action} has {r} reward.')
             logger.debug(info)
 
             num_inst = s.shape[0]
 
+            # Use input of next layer instead of output of current for all states except final.
+            if not done:
+                new_s = env.get_state('current_state')
+
             if exploration:
-                if not skip_add_replay:
-                    logging.debug('Storing instance replay.')
-                    actions_batch = np.array([action]*num_inst)
-                    rewards_batch = r
-                    done_float = 1.0 if done else 0.0
-                    if was_conv:
-                        td_errors = calculate_td_error(conv_agent, conv_target_network, s, actions_batch, rewards_batch, new_s, done_float)
-                        td_errors = np.reshape(np.abs(td_errors), -1)
-                        logger.debug(f'Conv replay has {len(conv_replay)} examples.')
-                        conv_replay.add_multiple(s, [action]*num_inst, [r]*num_inst, new_s, td_errors, [done]*num_inst)
-                        logger.debug(f'Conv replay has {len(conv_replay)} examples.')
+                data.append([s, action, r, new_s, done, was_conv])
 
-                    else:
-                        td_errors = calculate_td_error(fc_agent, fc_target_network, s, actions_batch, rewards_batch, new_s, done_float)
-                        td_errors = np.reshape(np.abs(td_errors), -1)
-                        logger.debug(f'FC replay has {len(fc_replay)} examples.')
-                        fc_replay.add_multiple(s, [action]*num_inst, [r]*num_inst, new_s, td_errors, [done]*num_inst)
-                        logger.debug(f'FC replay has {len(fc_replay)} examples.')
-                    logging.debug(f'Layer TD error is {td_errors}')
-
-                else:
-                    last_conv_data = (s, action, new_s)
-
+            
             s = env.get_state('current_state')
 
             if done:
                 if exploration:
-                    s, act, new_s = last_conv_data
-                    num_inst = s.shape[0]
-                    actions_batch = np.array([act]*num_inst)
-                    rewards_batch = r
-                    done_float = 1.0
-                    td_errors = calculate_td_error(conv_agent, conv_target_network, s, actions_batch, rewards_batch, new_s, done_float)
-                    td_errors = np.reshape(np.abs(td_errors), -1)
-                    logging.debug(f'Last conv layer TD error is {td_errors}')
-                    
-                    conv_replay.add_multiple(s, [action]*num_inst, [r]*num_inst, new_s, td_errors, [done]*num_inst)
+                    for row in data:
+                        # Replace r with _ for assigning the same reward to all actions of episode.
+                        s, a, r, sn, done, conv = row
+                        actions_batch = np.array([action]*num_inst)
+                        done_float = 1.0 if done else 0.0
+                        num_inst = s.shape[0]
+                        if conv:
+                            logger.debug(f'Conv replay has {len(conv_replay)} examples.')
+                            td_errors = calculate_td_error_conv(s, actions_batch, [r]*num_inst, sn, done_float )
+                            td_errors = np.reshape(np.abs(td_errors), -1)
+                            conv_replay.add_multiple(s, [a]*num_inst, [r]*num_inst, sn, td_errors, [done]*num_inst, dataset_name)
+                            logger.debug(f'Conv replay has {len(conv_replay)} examples.')
+                        else:
+                            logger.debug(f'FC replay has {len(fc_replay)} examples.')
+                            td_errors = calculate_td_error_fc(s, actions_batch, [r]*num_inst, sn, done_float )
+                            td_errors = np.reshape(np.abs(td_errors), -1)
+                            fc_replay.add_multiple(s, [a]*num_inst, [r]*num_inst, sn, td_errors, [done]*num_inst, dataset_name)
+                            logger.debug(f'FC replay has {len(fc_replay)} examples.')
+                        logging.debug(f'Layer TD error is {td_errors}')
                 s = env.reset()
                 break
 
-            gc.collect()
+        gc.collect()
         
 
-        info['actions'] = ','.join(['{:.4f}'.format(x) for x in info['actions']] )
+        # Using 0f as actions are percentages without decimals.
+        info['actions'] = ','.join(['{:.0f}'.format(x) for x in info['actions']] )
         info['run_id'] = run_id
         info['test_number'] = test_number
         info['game_id'] = it
@@ -420,7 +444,10 @@ def play_and_record(conv_agent, fc_agent,env, conv_replay, fc_replay,run_id, tes
         acc.append(info['test_acc_after'])
         weights.append(info['weights_after'])
         new_row = pd.DataFrame(info, index=[0])
-        new_row.to_csv(save_name, mode='a', index=False)
+        if not os.path.isfile(save_name):
+            new_row.to_csv(save_name, index=False)
+        else: # else it exists so append without writing the header
+            new_row.to_csv(save_name, mode='a', index=False, header=False)
 
         # Correct reward is the last value of r.
         
@@ -443,21 +470,9 @@ acc_history_tests = np.zeros(shape=(num_tests, num_datasets))
 rw_history_tests = np.zeros(shape=(num_tests, num_datasets))
 test_counter = 1
 
-fc_exp_replays = {}
-conv_exp_replays = {}
 
-replays_batch_sizes = []
-
-recommended_batch_size = rl_batch_size//len(dataset_names)
-accumulated_batch_size = 0
-for dataset in dataset_names:
-    if accumulated_batch_size + recommended_batch_size > rl_batch_size:
-        recommended_batch_size = rl_batch_size - accumulated_batch_size
-    replays_batch_sizes.append(recommended_batch_size)
-    accumulated_batch_size += recommended_batch_size
-
-    fc_exp_replays[dataset] = PrioritizedExperienceReplayBuffer(replay_buffer_size)
-    conv_exp_replays[dataset] = PrioritizedExperienceReplayBuffer(replay_buffer_size)
+fc_exp_replay = PrioritizedExperienceReplayBufferMultipleDatasets(replay_buffer_size, dataset_names)
+conv_exp_replay = PrioritizedExperienceReplayBufferMultipleDatasets(replay_buffer_size, dataset_names)
 
 
 for idx, env in enumerate(envs):
@@ -465,71 +480,89 @@ for idx, env in enumerate(envs):
     acc_history_tests[0, idx] = env.test_acc_before
 
 
-for idx, env in enumerate(envs):
-    dataset = dataset_names[idx]
-    play_and_record(conv_agent, fc_agent, env, conv_exp_replays[dataset], fc_exp_replays[dataset], run_id=run_id, test_number=0, dataset_name=dataset,save_name=exploration_filename,n_games=1)
+highest_td_error = True
+highest_rw = 0
 
+num_training_samples_per_epoch = rl_batch_size*update_weights_iterations
 
 with tqdm(total=rl_iterations,
-        bar_format="{l_bar}{bar}|{n}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}, Last 3 RW: {postfix[0][0]:.2f}, {postfix[0][1]:.2f} & {postfix[0][2]:.2f} W: {postfix[1][0]:.2f}, {postfix[1][1]:.2f} & {postfix[1][2]:.2f} Acc: {postfix[2][0]:.2f}, {postfix[2][1]:.2f} & {postfix[2][2]:.2f}] Replay: conv:{postfix[3]}/fc:{postfix[4]}.",
+        bar_format="{l_bar}{bar}|{n}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}, Last 3 RW: {postfix[0][0]:.2f}, {postfix[0][1]:.2f} & {postfix[0][2]:.2f} W: {postfix[1][0]:.2f}, {postfix[1][1]:.2f} & {postfix[1][2]:.2f} Acc: {postfix[2][0]:.2f}, {postfix[2][1]:.2f} & {postfix[2][2]:.2f}] Replay: conv:{postfix[3]}/fc:{postfix[4]}. Epsylon={postfix[5]}.",
         postfix=[dict({0: 0, 1: 0, 2: np.mean(rw_history_tests[0])}), 
         dict({0: 0, 1: 0, 2: np.mean(weights_history_tests[0])}),
-        dict({0: 0, 1: 0, 2: np.mean(acc_history_tests[0])}), len(conv_exp_replays[dataset_names[0]]), len(fc_exp_replays[dataset_names[0]])]) as t:
+        dict({0: 0, 1: 0, 2: np.mean(acc_history_tests[0])}), len(conv_exp_replay), len(fc_exp_replay), conv_agent.epsilon]) as t:
 
     for i in range(rl_iterations):
 
         # generate new sample
         for idx, env in enumerate(envs):
             dataset = dataset_names[idx]
-            play_and_record(conv_agent, fc_agent, env, conv_exp_replays[dataset], fc_exp_replays[dataset], run_id=run_id, test_number=i, dataset_name=dataset,save_name=exploration_filename,n_games=1)
+            play_and_record(conv_agent, fc_agent, env, conv_exp_replay, fc_exp_replay, run_id=run_id, test_number=i, dataset_name=dataset,save_name=exploration_filename,n_games=1)
 
+        accum_conv_loss = 0
+        accum_fc_loss = 0
         for w_it in range(update_weights_iterations):
             logger.debug(f'Processing batch {w_it+1}/{update_weights_iterations}.')
             
             # train fc
             logger.debug('Training conv agent.')
-            batch_data = sample_batch(conv_exp_replays[dataset], batch_size=rl_batch_size)
+            batch_data = sample_batch(conv_exp_replay, batch_size=rl_batch_size, highest_td_error=highest_td_error)
             td_error_indexes = batch_data['td_indexes']
             del batch_data['td_indexes']
             conv_loss_t = update_agent_conv(**batch_data)
-            conv_exp_replays[dataset].update_td_error(td_error_indexes, np.abs(conv_loss_t.numpy().flatten()))
+            conv_exp_replay.update_td_error(td_error_indexes, np.abs(conv_loss_t.numpy().flatten()))
            
 
             # train fc
             logger.debug('Training fc agent.')
-            batch_data = sample_batch(fc_exp_replays[dataset], batch_size=rl_batch_size)
+            batch_data = sample_batch(fc_exp_replay, batch_size=rl_batch_size, highest_td_error=highest_td_error)
             td_error_indexes = batch_data['td_indexes']
             del batch_data['td_indexes']
             fc_loss_t = update_agent_fc(**batch_data)
-            fc_exp_replays[dataset].update_td_error(td_error_indexes, np.abs(fc_loss_t.numpy().flatten()))
-           
+            fc_exp_replay.update_td_error(td_error_indexes, np.abs(fc_loss_t.numpy().flatten()))
 
-            update_target(conv_target_network.model.variables, conv_agent.model.variables, tau)
-            update_target(fc_target_network.model.variables, fc_agent.model.variables, tau)
+            accum_conv_loss += np.sum(conv_loss_t)
+            accum_fc_loss += np.sum(fc_loss_t)
 
-        td_loss_history_conv.append(np.mean(conv_loss_t))
-        td_loss_history_fc.append(np.mean(fc_loss_t))
 
-        t.postfix[4]= len(fc_exp_replays[dataset_names[0]])
-        t.postfix[3]= len(conv_exp_replays[dataset_names[0]])
+        td_loss_history_conv.append(conv_loss_t/num_training_samples_per_epoch)
+        td_loss_history_fc.append(fc_loss_t/num_training_samples_per_epoch)
+
+        # highest_td_error = not highest_td_error
+
+        conv_agent.epsilon = max(min_epsylon, conv_agent.epsilon * epsylon_decay )
+        fc_agent.epsilon = conv_agent.epsilon
+        t.postfix[3] = len(conv_exp_replay)
+        t.postfix[4] = len(fc_exp_replay)
+        t.postfix[5] = conv_agent.epsilon
         
-        # adjust agent parameters
-        if i % 10 == 0:
+        if i % copy_weights_frequency == 0:
+            # conv_target_network.model.set_weights(conv_agent.model.get_weights())
+            fc_target_network.model.set_weights(fc_agent.model.get_weights())
 
-            for idx, env in enumerate(envs):
+        # adjust agent parameters
+        if i % test_frequency_epochs == 0:
+            accumulated_rw = 0
+            for idx, env in enumerate(test_envs):
                 dataset = dataset_names[idx]
                 logger.debug(f'Testing for dataset {dataset}.')
-                rw, acc, weights = play_and_record(conv_agent, fc_agent, env, conv_exp_replays[dataset], fc_exp_replays[dataset],run_id=run_id,test_number=i//10, dataset_name=dataset,save_name=test_filename, n_games=eval_n_samples, exploration=False)            
+                rw, acc, weights = play_and_record(conv_agent, fc_agent, env, conv_exp_replay, fc_exp_replay,run_id=run_id,test_number=i//10, dataset_name=dataset,save_name=test_filename, n_games=eval_n_samples, exploration=False)            
                 rw_history_tests[test_counter, idx] = rw
                 acc_history_tests[test_counter, idx] = acc
+                accumulated_rw += rw
                 weights_history_tests[test_counter, idx] = weights
                 
-                
-                fc_agent.model.save_weights(agents_path+'_fc')
-                fc_target_network.model.save_weights(agents_path+'_fc_target')
+            accumulated_rw = accumulated_rw / num_datasets
+            
+            
 
-                conv_agent.model.save_weights(agents_path+'_conv')
-                conv_target_network.model.save_weights(agents_path+'_conv_target')
+            if accumulated_rw > highest_rw:
+                logger.info(f'Saving DQN weights as {accumulated_rw} > {highest_rw}. Mean acc: {np.mean(acc_history_tests[test_counter])}. Mean w: {np.mean(weights_history_tests[test_counter])}')
+                highest_rw = accumulated_rw
+                fc_agent.model.save_weights(agents_path+'_fc.cpkt')
+                fc_target_network.model.save_weights(agents_path+'_fc_target.cpkt')
+
+                conv_agent.model.save_weights(agents_path+'_conv.cpkt')
+                # conv_target_network.model.save_weights(agents_path+'_conv_target.ckpt')
 
 
             t.postfix[0][2] = np.mean(rw_history_tests[test_counter])
