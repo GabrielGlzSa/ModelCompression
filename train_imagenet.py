@@ -78,16 +78,23 @@ def create_model():
     train_metric = tf.keras.metrics.SparseCategoricalAccuracy()
 
 
-    model = tf.keras.applications.vgg16.VGG16(
-                            include_top=True,
-                            weights='imagenet',
-                            input_shape=(224,224,3),
-                            classes=1000,
-                            classifier_activation='softmax'
-                        )
+    # model = tf.keras.applications.vgg16.VGG16(
+    #                         include_top=True,
+    #                         weights='imagenet',
+    #                         input_shape=(224,224,3),
+    #                         classes=1000,
+    #                         classifier_activation='softmax'
+    #                     )
+
+    i = tf.keras.layers.Input([None, None, 3], dtype = tf.uint8)
+    x = tf.cast(i, tf.float32)
+    x = tf.keras.applications.vgg16.preprocess_input(x)
+    core = tf.keras.applications.vgg16.VGG16()
+    x = core(x)
+    model = tf.keras.Model(inputs=[i], outputs=[x])
+
     model.compile(optimizer=optimizer, loss=loss_object,
                     metrics=train_metric)
-
 
     return model       
 
