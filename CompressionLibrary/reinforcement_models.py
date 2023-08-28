@@ -141,31 +141,35 @@ class DuelingDQNAgentBigger(Agent):
 
     def model_creation(self, name, state_shape, n_actions, layer_type):
         if layer_type=='fc':
-          input = tf.keras.layers.Input(shape=(None, 1))
-          x = tf.keras.layers.Conv1D(128, kernel_size=3, activation='relu')(input)
-          x = tf.keras.layers.Conv1D(128, kernel_size=3, activation='relu')(x)
-          x = tf.keras.layers.Conv1D(128, kernel_size=3, activation='relu')(x)
-          x = ROIEmbedding1D(n_bins=[32, 16, 8 ,4, 2, 1])(x)
-          v = tf.keras.layers.Dense(512, activation='relu')(x)
-          v = tf.keras.layers.Dense(512, activation='relu')(v)
-          v = tf.keras.layers.Dense(1, activation='relu')(v) #relu
-          a = tf.keras.layers.Dense(512, activation='relu')(x)
-          a = tf.keras.layers.Dense(512, activation='relu')(a)
-          a = tf.keras.layers.Dense(n_actions, activation='relu')(a) #relu
-          output = tf.keras.layers.Lambda(lambda inputs: inputs[0] + (inputs[1] - tf.math.reduce_mean(inputs[1], axis=1, keepdims=True)))([v,a])
-        else:          
-          input = tf.keras.layers.Input(shape=(None, None, state_shape[-1]))
-          x = tf.keras.layers.Conv2D(128, kernel_size=3, activation='relu')(input) 
-          x = tf.keras.layers.Conv2D(128, kernel_size=3, activation='relu')(x)
-          x = tf.keras.layers.Conv2D(128, kernel_size=3, activation='relu')(x)
-          x = ROIEmbedding(n_bins=[(4,4), (2,2), (1,1)])(x)
-          v = tf.keras.layers.Dense(512, activation='relu')(x)
-          v = tf.keras.layers.Dense(512, activation='relu')(v)
-          v = tf.keras.layers.Dense(1, activation='relu')(v) #relu
-          a = tf.keras.layers.Dense(512, activation='relu')(x)
-          a = tf.keras.layers.Dense(512, activation='relu')(a)
-          a = tf.keras.layers.Dense(n_actions, activation='relu')(a) #relu
-          output = tf.keras.layers.Lambda(lambda inputs: inputs[0] + (inputs[1] - tf.math.reduce_mean(inputs[1], axis=1, keepdims=True)))([v,a])
+            input = tf.keras.layers.Input(shape=(state_shape[-1]))
+            # x = tf.keras.layers.Conv1D(256, kernel_size=3, activation='relu')(input)
+            # x = tf.keras.layers.Conv1D(256, kernel_size=3, activation='relu')(x)
+            # x = tf.keras.layers.Conv1D(256, kernel_size=3, activation='relu')(x)
+            # x = tf.keras.layers.Flatten()(x)
+            # x = ROIEmbedding1D(n_bins=[32, 16, 8 ,4, 2, 1])(x)
+            x = tf.keras.layers.Dense(1024, activation='relu')(input)
+            v = tf.keras.layers.Dense(1024, activation='relu')(x)
+            v = tf.keras.layers.Dense(1024, activation='relu')(v)
+            v = tf.keras.layers.Dense(1, activation='relu')(v) #relu
+            a = tf.keras.layers.Dense(1024, activation='relu')(x)
+            a = tf.keras.layers.Dense(1024, activation='relu')(a)
+            a = tf.keras.layers.Dense(n_actions, activation='relu')(a) #relu
+            output = tf.keras.layers.Lambda(lambda inputs: inputs[0] + (inputs[1] - tf.math.reduce_mean(inputs[1], axis=1, keepdims=True)))([v,a])
+        else:
+            b, h, w, c = state_shape          
+            input = tf.keras.layers.Input(shape=(h, w, c))
+            x = tf.keras.layers.Conv2D(256, kernel_size=3, activation='relu')(input) 
+            x = tf.keras.layers.Conv2D(256, kernel_size=3, activation='relu', padding='same')(x)
+            x = tf.keras.layers.Conv2D(256, kernel_size=3, activation='relu', padding='same')(x)
+            # x = ROIEmbedding(n_bins=[(4,4), (2,2), (1,1)])(x)
+            x = tf.keras.layers.Flatten()(x)
+            v = tf.keras.layers.Dense(256, activation='relu')(x)
+            v = tf.keras.layers.Dense(256, activation='relu')(v)
+            v = tf.keras.layers.Dense(1, activation='relu')(v) #relu
+            a = tf.keras.layers.Dense(256, activation='relu')(x)
+            a = tf.keras.layers.Dense(256, activation='relu')(a)
+            a = tf.keras.layers.Dense(n_actions, activation='relu')(a) #relu
+            output = tf.keras.layers.Lambda(lambda inputs: inputs[0] + (inputs[1] - tf.math.reduce_mean(inputs[1], axis=1, keepdims=True)))([v,a])
         model = tf.keras.Model(inputs=input, outputs=output, name=name)
         return model
 
@@ -174,7 +178,6 @@ class DuelingDQNAgentBigger(Agent):
         return qvalues
 
     def sample_actions(self, qvalues, exploration=True):
-
         if exploration:
             _, n_actions = qvalues.shape
             random_action = np.random.choice(n_actions, size=1)[0]
