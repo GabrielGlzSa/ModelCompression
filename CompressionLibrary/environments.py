@@ -12,8 +12,8 @@ import copy
 
 class ModelCompressionEnv():
     def __init__(self, reward_func, compressors_list, create_model_func, compr_params,
-                 train_ds, validation_ds, test_ds,
-                 layer_name_list, input_shape, current_state_source='layer_input', next_state_source='layer_output', verbose=0, get_state_from='validation', tuning_mode='layer',tuning_epochs=5, num_feature_maps=128, tuning_batch_size=32, strategy=None):
+                 train_ds, validation_ds, test_ds, state_ds,
+                 layer_name_list, input_shape, current_state_source='layer_input', next_state_source='layer_output', verbose=0, tuning_mode='layer',tuning_epochs=5, num_feature_maps=128, tuning_batch_size=32, strategy=None):
 
         self.reward_func = reward_func
         self._episode_ended = False
@@ -23,6 +23,7 @@ class ModelCompressionEnv():
         self.train_ds = train_ds
         self.validation_ds = validation_ds
         self.test_ds = test_ds
+        self.state_ds = state_ds
         self.original_layer_name_list = layer_name_list
         self.layer_name_list = self.original_layer_name_list.copy()
         self.input_shape = input_shape
@@ -32,7 +33,6 @@ class ModelCompressionEnv():
         self.num_feature_maps = num_feature_maps
         self.tuning_batch_size = tuning_batch_size
         self.tuning_epochs = tuning_epochs
-        self.get_state_from = get_state_from
         self.strategy = strategy
         self.tuning_mode = tuning_mode
         self.callbacks = []
@@ -190,15 +190,7 @@ class ModelCompressionEnv():
                     raise "Please choose from 'train', 'validation' and 'test'."
             else:
                 self.logger.debug('Using all feature maps')
-
-                if self.get_state_from == 'train':
-                    self.current_batch = self.train_ds
-                elif self.get_state_from == 'validation':
-                    self.current_batch = self.validation_ds
-                elif self.get_state_from == 'test':
-                    self.current_batch = self.test_ds
-                else:
-                    raise "Please choose from 'train', 'validation' and 'test'."
+                self.current_batch = self.state_ds
 
         self.logger.debug(f'Generating feature maps for layer {layer_name}')
         state = generate_fmp.predict(self.current_batch, verbose=self.verbose)
