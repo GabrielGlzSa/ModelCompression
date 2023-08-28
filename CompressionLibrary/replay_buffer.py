@@ -332,8 +332,8 @@ class PrioritizedExperienceReplayBuffer(object):
         td_error_before = np.mean(self._td_error[indexes])
         self._td_error[indexes] = td_errors
         self.logger.debug(f'TD errors after: {self._td_error[indexes]}')
-        self.logger.debug(f'Mean TD error before: {td_error_before}')
-        self.logger.debug(f'Mean TD error after: {np.mean(self._td_error[indexes])}')
+        self.logger.debug(f'Mean TD error before:\t\t{td_error_before}')
+        self.logger.debug(f'Mean TD error after:\t\t{np.mean(self._td_error[indexes])}')
 
     def sample(self, batch_size, highest_td_error=True):
         length_storage = len(self._storage)
