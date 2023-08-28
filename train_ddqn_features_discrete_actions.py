@@ -15,7 +15,7 @@ from CompressionLibrary.environments import ModelCompressionSVDIntEnv
 from CompressionLibrary.reinforcement_models import DuelingDQNAgentBigger as DuelingDQNAgent
 from CompressionLibrary.replay_buffer import PrioritizedExperienceReplayBufferMultipleDatasets
 from CompressionLibrary.utils import calculate_model_weights
-from CompressionLibrary.reward_functions import reward_MnasNet_penalty as calculate_reward
+from CompressionLibrary.reward_functions import reward_MnasNet as calculate_reward
 
 from uuid import uuid4
 from datetime import datetime
@@ -28,7 +28,7 @@ from functools import partial
 import gc
 
 
-dataset_names = ['fashion_mnist']#['fashion_mnist','kmnist','mnist']
+dataset_names = ['mnist']#['fashion_mnist','kmnist','mnist']
 agent_name = 'DDQN_discrete_tuning_zero_rw_FM_best_img_' + '-'.join(dataset_names)
 run_id = datetime.now().strftime('%Y-%m-%d-%H-%M%S-') + str(uuid4())
 
@@ -71,7 +71,7 @@ figures_path = data_path+f'/figures/{agent_name}'
 # Parameters shared in training and testing env
 current_state = 'layer_input'
 next_state = 'layer_output'
-tuning_epochs = 100
+tuning_epochs = 0
 tuning_mode = 'final'
 
 batch_size_per_replica = 128
@@ -81,35 +81,40 @@ tuning_batch_size = batch_size_per_replica * strategy.num_replicas_in_sync
 # Env variables
 training_state_set_source = 'train'
 training_num_feature_maps = -1
+reward_step = True
 
 
 # Testing variables
 testing_state_set_source = 'validation'
 testing_num_feature_maps = -1
 eval_n_samples = 1
-test_frequency_epochs = 10 # Test every 20 epochs.
+test_frequency_epochs = 100 # Test every 20 epochs.
 
 #Autoencoder
 latent_dim = 64
 
 # Replay variables
-fc_replay_buffer_size = 10000
-conv_replay_buffer_size = 5000
-replay_alpha = 2.0
+fc_replay_buffer_size = 40000
+conv_replay_buffer_size = 50000
+replay_alpha = 1.0
 
 # RL training variables
 
 verbose = 0
-rl_iterations = 1000
+rl_iterations = 10000
 update_weights_iterations = 10
-rl_batch_size = 64
+rl_batch_size = 32
 gamma = 0.99
 beta = 0.5
 max_beta = 1.0
 beta_step = (max_beta-beta)/rl_iterations
 
+
+
 conv_learning_rate = 1e-5
 fc_learning_rate = 1e-5
+# decay_rate = 0.96
+# decay_steps = 1000
 epsilon_start_value = 1.0
 min_epsylon = 0.1
 copy_weights_frequency = 100
@@ -119,7 +124,9 @@ copy_weights_frequency = 100
 # For 2000 training epochs.
 # epsylon_decay = 0.999
 # For 1000 training epochs.
-epsylon_decay = 0.997
+# epsylon_decay = 0.997
+# For 10,000 training epochs.
+epsylon_decay = 0.9994
 
 
 layer_name_list = ['conv2d_1',  'dense', 'dense_1']
@@ -322,12 +329,12 @@ with strategy.scope():
                         n_actions=fc_n_actions, epsilon=epsilon_start_value, layer_type='fc')
 
     fc_agent.model.summary()
-
+    
     conv_agent = DuelingDQNAgent(
         name="ddqn_agent_conv", state_shape=conv_shape, n_actions=conv_n_actions, epsilon=epsilon_start_value, layer_type='cnn')
     # conv_target_network = DuelingDQNAgent(
     #     name="target_conv", state_shape=conv_shape, n_actions=conv_n_actions, epsilon=epsilon_start_value,layer_type='cnn')
-
+    conv_agent.model.summary()
     try:
         fc_agent.model.load_weights(agents_path+'_fc.cpkt')
         fc_target_network.model.load_weights(agents_path+'_fc_target.cpkt')
@@ -339,6 +346,8 @@ with strategy.scope():
         pass
 
 
+    # conv_lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(conv_learning_rate, decay_steps, decay_rate, staircase=True)
+    # fc_lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(fc_learning_rate, decay_steps, decay_rate, staircase=True)
     optimizer_conv = tf.keras.optimizers.Adam(conv_learning_rate)
     optimizer_fc = tf.keras.optimizers.Adam(fc_learning_rate)
 
@@ -357,11 +366,12 @@ def update_agent_fc(state_batch, action_batch, reward_batch, next_state_batch, d
         deltai = tf.math.square(td_error)
         importance_sampling = (1 / fc_replay_buffer_size* sample_probabilities)**beta
         importance_sampling = importance_sampling / tf.math.reduce_max(importance_sampling)
-        td_loss = tf.math.reduce_mean((importance_sampling*deltai))
+        loss = importance_sampling*deltai
+        td_loss = tf.math.reduce_mean(loss)
 
     gradients = tape.gradient(td_loss, fc_agent.model.trainable_weights)
     optimizer_fc.apply_gradients(zip(gradients, fc_agent.model.trainable_weights))
-    return td_error
+    return td_error, loss
 
 @tf.function
 def update_agent_conv(state_batch, action_batch, reward_batch, next_state_batch, done, sample_probabilities):
@@ -378,12 +388,13 @@ def update_agent_conv(state_batch, action_batch, reward_batch, next_state_batch,
         deltai = tf.math.square(td_error)
         importance_sampling = (1 / conv_replay_buffer_size * sample_probabilities)**beta
         importance_sampling = importance_sampling / tf.math.reduce_max(importance_sampling)
-        td_loss = tf.math.reduce_mean((importance_sampling*deltai))
+        loss = importance_sampling*deltai
+        td_loss = tf.math.reduce_mean(loss)
 
 
     gradients = tape.gradient(td_loss, conv_agent.model.trainable_weights)
     optimizer_conv.apply_gradients(zip(gradients, conv_agent.model.trainable_weights))
-    return td_error
+    return td_error, loss
 
 original_weights = np.mean([calculate_model_weights(env.model) for env in envs])
 original_acc = np.mean([env.test_acc_before for env in envs])
@@ -393,6 +404,8 @@ mean_acc_history = [original_acc]
 mean_rw_history = [0]
 td_loss_history_conv = []
 td_loss_history_fc = []
+weigthed_is_loss_conv = []
+weigthed_is_loss_fc = []
 
 
 def sample_batch(exp_replay, batch_size, highest_td_error):
@@ -481,6 +494,10 @@ def play_and_record(conv_agent, fc_agent,env, conv_replay, fc_replay,run_id, tes
                 action = conv_agent.sample_actions(qvalues.numpy(), exploration=exploration)[0]
             if isinstance(layer, tf.keras.layers.Dense):
                 was_conv = False
+                s = np.squeeze(s)
+                temp = np.zeros(shape=(s.shape[0], 400))
+                temp[:, :s.shape[-1]] = s
+                s = temp
                 qvalues = fc_agent.get_qvalues(s)
                 action = fc_agent.sample_actions(qvalues.numpy(), exploration=exploration)[0]
 
@@ -490,6 +507,8 @@ def play_and_record(conv_agent, fc_agent,env, conv_replay, fc_replay,run_id, tes
 
             # Apply action
             new_s, r, done, info = env.step(action) 
+            # r * = 100
+            
 
             logger.debug(f'Iteration {it} - Layer {current_layer_name} {k}/{len(env.original_layer_name_list)}\tChosen action {action} has {r} reward.')
             logger.debug(info)
@@ -501,6 +520,10 @@ def play_and_record(conv_agent, fc_agent,env, conv_replay, fc_replay,run_id, tes
                 new_s = env.get_state('current_state')
 
             if exploration:
+                new_s = np.squeeze(new_s)
+                temp = np.zeros(shape=(new_s.shape[0], 400))
+                temp[:, :new_s.shape[-1]] = new_s
+                new_s = temp
                 data.append([s, action, r, new_s, done, was_conv])
 
             
@@ -510,8 +533,8 @@ def play_and_record(conv_agent, fc_agent,env, conv_replay, fc_replay,run_id, tes
                 if exploration:
                     for row in data:
                         # Replace r with _ for assigning the same reward to all actions of episode.
-                        s, a, r, sn, done, conv = row
-                        actions_batch = np.array([action]*num_inst)
+                        s, a, rw, sn, done, conv = row
+                        actions_batch = np.array([a]*num_inst)
                         done_float = 1.0 if done else 0.0
                         num_inst = s.shape[0]
                         if conv:
@@ -522,7 +545,7 @@ def play_and_record(conv_agent, fc_agent,env, conv_replay, fc_replay,run_id, tes
                             logger.debug(f'Conv replay has {len(conv_replay)} examples.')
                         else:
                             logger.debug(f'FC replay has {len(fc_replay)} examples.')
-                            td_errors = calculate_td_error_fc(s, actions_batch, [r]*num_inst, sn, done_float )
+                            td_errors = calculate_td_error_fc(s, actions_batch, [rw]*num_inst, sn, done_float )
                             td_errors = np.reshape(np.abs(td_errors), -1)
                             fc_replay.add_multiple(s, [a]*num_inst, [r]*num_inst, sn, td_errors, [done]*num_inst, dataset_name)
                             logger.debug(f'FC replay has {len(fc_replay)} examples.')
@@ -600,6 +623,8 @@ with tqdm(total=rl_iterations,
 
         accum_conv_loss = 0
         accum_fc_loss = 0
+        accum_conv_ws_loss = 0
+        accum_fc_ws_loss = 0
         for w_it in range(update_weights_iterations):
             logger.debug(f'Processing batch {w_it+1}/{update_weights_iterations}.')
             
@@ -608,8 +633,8 @@ with tqdm(total=rl_iterations,
             batch_data = sample_batch(conv_exp_replay, batch_size=rl_batch_size, highest_td_error=highest_td_error)
             td_error_indexes = batch_data['td_indexes']
             del batch_data['td_indexes']
-            conv_loss_t = update_agent_conv(**batch_data)
-            conv_exp_replay.update_td_error(td_error_indexes, np.abs(conv_loss_t.numpy().flatten()))
+            conv_loss_td, conv_ws_loss = update_agent_conv(**batch_data)
+            conv_exp_replay.update_td_error(td_error_indexes, np.abs(conv_loss_td.numpy().flatten()))
            
 
             # train fc
@@ -617,15 +642,19 @@ with tqdm(total=rl_iterations,
             batch_data = sample_batch(fc_exp_replay, batch_size=rl_batch_size, highest_td_error=highest_td_error)
             td_error_indexes = batch_data['td_indexes']
             del batch_data['td_indexes']
-            fc_loss_t = update_agent_fc(**batch_data)
-            fc_exp_replay.update_td_error(td_error_indexes, np.abs(fc_loss_t.numpy().flatten()))
+            fc_loss_td, fc_ws_loss = update_agent_fc(**batch_data)
+            fc_exp_replay.update_td_error(td_error_indexes, np.abs(fc_loss_td.numpy().flatten()))
 
-            accum_conv_loss += np.sum(conv_loss_t)
-            accum_fc_loss += np.sum(fc_loss_t)
+            accum_conv_loss += np.sum(conv_loss_td)
+            accum_fc_loss += np.sum(fc_loss_td)
+            accum_conv_ws_loss += np.sum(conv_ws_loss)
+            accum_fc_ws_loss += np.sum(fc_ws_loss)
 
 
         td_loss_history_conv.append(accum_conv_loss/num_training_samples_per_epoch)
         td_loss_history_fc.append(accum_fc_loss/num_training_samples_per_epoch)
+        weigthed_is_loss_conv.append(accum_conv_ws_loss/num_training_samples_per_epoch)
+        weigthed_is_loss_fc.append(accum_fc_ws_loss/num_training_samples_per_epoch)
         beta += beta_step
 
         # highest_td_error = not highest_td_error
@@ -720,11 +749,19 @@ with tqdm(total=rl_iterations,
 
         t.update()
         
-
+        fig = plt.figure(figsize=(12,6))
         plt.plot(td_loss_history_conv, color='r')
         plt.plot(td_loss_history_fc, color='b')
         plt.legend(['conv', 'fc'])
         plt.ylabel("TD loss")
         plt.xlabel('Epochs')
         plt.savefig(figures_path+'_td_loss.png')
+        plt.close()
+        fig = plt.figure(figsize=(12,6))
+        plt.plot(weigthed_is_loss_conv, color='r')
+        plt.plot(weigthed_is_loss_fc, color='b')
+        plt.legend(['conv WIS', 'fc WIS'])
+        plt.ylabel("Weighted Importance Sampling TD loss")
+        plt.xlabel('Epochs')
+        plt.savefig(figures_path+'_wis_td_loss.png')
         plt.close()
