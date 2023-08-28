@@ -3,7 +3,12 @@ import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' 
 
 import tensorflow as tf
+from tensorflow.keras import layers
+from tensorflow.keras.models import Model
 import tensorflow_datasets as tfds
+from sklearn.neighbors import NearestCentroid
+from scipy.spatial import distance_matrix
+
 import logging
 
 from CompressionLibrary.environments import ModelCompressionSVDIntEnv
@@ -23,8 +28,8 @@ from functools import partial
 import gc
 
 
-dataset_names = ['fashion_mnist','mnist']#['fashion_mnist','kmnist','mnist']
-agent_name = 'DDQN_discrete_tuning_zero_rw_FM_' + '-'.join(dataset_names)
+dataset_names = ['fashion_mnist']#['fashion_mnist','kmnist','mnist']
+agent_name = 'DDQN_discrete_tuning_zero_rw_FM_best_img_' + '-'.join(dataset_names)
 run_id = datetime.now().strftime('%Y-%m-%d-%H-%M%S-') + str(uuid4())
 
 try:
@@ -55,6 +60,8 @@ log.setLevel(logging.ERROR)
 
 logger = logging.getLogger(__name__)
 
+logger.info(f'Agent is {agent_name}.')
+
 exploration_filename = data_path + f'/stats/{agent_name}_training.csv'
 test_filename = data_path + f'/stats/{agent_name}_testing.csv'
 agents_path = data_path+f'/agents/DDQN/checkpoints/LeNet_{agent_name}'
@@ -72,29 +79,37 @@ tuning_batch_size = batch_size_per_replica * strategy.num_replicas_in_sync
 
 
 # Env variables
-training_state_set_source = 'validation'
-training_num_feature_maps = 128
+training_state_set_source = 'train'
+training_num_feature_maps = -1
 
 
 # Testing variables
-testing_state_set_source = 'test'
+testing_state_set_source = 'validation'
 testing_num_feature_maps = -1
 eval_n_samples = 1
-test_frequency_epochs = 20 # Test every 20 epochs.
+test_frequency_epochs = 10 # Test every 20 epochs.
 
+#Autoencoder
+latent_dim = 64
 
 # Replay variables
-replay_buffer_size = 1000000
+fc_replay_buffer_size = 10000
+conv_replay_buffer_size = 5000
+replay_alpha = 2.0
 
 # RL training variables
 
 verbose = 0
-rl_iterations = 2000
+rl_iterations = 1000
 update_weights_iterations = 10
-rl_batch_size = 128
+rl_batch_size = 64
 gamma = 0.99
 beta = 0.5
-learning_rate = 1e-5
+max_beta = 1.0
+beta_step = (max_beta-beta)/rl_iterations
+
+conv_learning_rate = 1e-5
+fc_learning_rate = 1e-5
 epsilon_start_value = 1.0
 min_epsylon = 0.1
 copy_weights_frequency = 100
@@ -102,7 +117,9 @@ copy_weights_frequency = 100
 # For 4000 training epochs.
 # epsylon_decay = 0.9997 #for 4000
 # For 2000 training epochs.
-epsylon_decay = 0.999
+# epsylon_decay = 0.999
+# For 1000 training epochs.
+epsylon_decay = 0.997
 
 
 layer_name_list = ['conv2d_1',  'dense', 'dense_1']
@@ -139,13 +156,38 @@ def create_model(dataset_name, train_ds, valid_ds):
 
     return model       
 
-def dataset_preprocessing(img, label):
+
+class Autoencoder(Model):
+  def __init__(self, latent_dim):
+    super(Autoencoder, self).__init__()
+    self.latent_dim = latent_dim
+    self.encoder = tf.keras.Sequential([
+      layers.Flatten(),
+      layers.Dense(latent_dim, activation='relu'),
+    ])
+    self.decoder = tf.keras.Sequential([
+      layers.Dense(784, activation='sigmoid'),
+      layers.Reshape((28, 28))
+    ])
+
+  def call(self, x):
+    encoded = self.encoder(x)
+    decoded = self.decoder(encoded)
+    return decoded
+
+
+def dataset_preprocessing_img2img(img, label):
+    img = tf.cast(img, tf.float32)
+    img = img/255.0
+    return img, img
+
+def dataset_preprocessing_img2label(img, label):
     img = tf.cast(img, tf.float32)
     img = img/255.0
     return img, label
 
-def load_dataset(dataset_name, batch_size=128):
-    splits, info = tfds.load(dataset_name, as_supervised=True, with_info=True, shuffle_files=True, 
+def load_dataset(dataset_name, dataset_preprocessing, batch_size=128):
+    splits, info = tfds.load(dataset_name, as_supervised=True, with_info=True, shuffle_files=True,
                                 split=['train[:80%]', 'train[80%:]','test'])
 
     (train_examples, validation_examples, test_examples) = splits
@@ -164,6 +206,55 @@ def load_dataset(dataset_name, batch_size=128):
 
 
 
+def get_best_per_class(tf_dataset, autoencoder):
+    x_train = []
+    y_train = []
+
+    for x,y in tfds.as_numpy(tf_dataset):
+        x_train.append(x)
+        y_train.append(y)
+
+    x_train = np.concatenate(x_train, axis=0)
+    y_train = np.concatenate(y_train, axis=0)
+    encoded_imgs = autoencoder.encoder(x_train).numpy()
+    decoded_imgs = autoencoder.decoder(encoded_imgs).numpy()
+    clf = NearestCentroid()
+    clf.fit(encoded_imgs, y_train)
+
+    best_images = []
+    best_decoded = []
+    labels_best = []
+    num_classes = clf.centroids_.shape[0]
+    for class_number in range(num_classes):
+        class_members = np.argwhere(y_train == class_number).flatten()
+        dm = distance_matrix(encoded_imgs[class_members], clf.centroids_)
+        idx_best = np.argmin(dm[:, class_number])
+        best_images.append(x_train[class_members[idx_best]])
+        best_decoded.append(decoded_imgs[class_members[idx_best]])
+        labels_best.append(y_train[[class_members[idx_best]]])
+        logger.debug(f'Best member of {class_number} is {class_members[idx_best]} with class {labels_best[-1]}')
+
+    return tf.data.Dataset.from_tensor_slices((best_images, labels_best)).batch(num_classes)
+
+def generate_dataset_best_img(dataset_name, latent_dim, batch_size):
+    autoencoder = Autoencoder(latent_dim)
+    autoencoder.compile(optimizer='adam', loss=tf.keras.losses.MeanSquaredError())
+    train_ds, valid_ds, test_ds, input_shape, _ = load_dataset(dataset_name, dataset_preprocessing_img2img, batch_size)
+    autoencoder.fit(train_ds,
+                    epochs=50,
+                    shuffle=True,
+                    validation_data=valid_ds, verbose=0)
+
+    ft_train_ds, ft_valid_ds, ft_test_ds, input_shape, num_classes = load_dataset(dataset_name, dataset_preprocessing_img2label, batch_size)
+
+    train_state_ds = get_best_per_class(ft_train_ds, autoencoder)
+    valid_state_ds = get_best_per_class(ft_valid_ds, autoencoder)
+    test_state_ds = get_best_per_class(ft_test_ds, autoencoder)
+
+
+
+    return train_state_ds, valid_state_ds, test_state_ds, ft_train_ds, ft_valid_ds, ft_test_ds, input_shape, num_classes
+
 input_shape = (28,28,1)
 
 def create_environments(dataset_names, num_feature_maps, state_set_source):
@@ -176,7 +267,14 @@ def create_environments(dataset_names, num_feature_maps, state_set_source):
     parameters['MLPCompression'] = {'layer_name': None, 'percentage': None}
     environments = []
     for dataset in dataset_names:
-        train_ds, valid_ds, test_ds, input_shape, _ = load_dataset(dataset, tuning_batch_size)
+        train_state_ds, valid_state_ds, test_state_ds, train_ds, valid_ds, test_ds, input_shape, num_classes = generate_dataset_best_img(dataset, latent_dim, tuning_batch_size)
+        if state_set_source=='train':
+            state_ds = train_state_ds
+        elif state_set_source=='validation':
+            state_ds = valid_state_ds
+        elif state_set_source == 'test':
+            state_ds = test_state_ds
+
         new_func = partial(create_model, dataset_name=dataset, train_ds=train_ds, valid_ds=valid_ds)
         env = ModelCompressionSVDIntEnv(
                 reward_func=calculate_reward,
@@ -190,7 +288,7 @@ def create_environments(dataset_names, num_feature_maps, state_set_source):
                 input_shape=input_shape, 
                 tuning_batch_size=tuning_batch_size, 
                 tuning_epochs=tuning_epochs,
-                get_state_from=state_set_source, 
+                state_ds=state_ds, 
                 current_state_source=current_state, 
                 next_state_source=next_state, 
                 num_feature_maps=num_feature_maps, 
@@ -241,8 +339,8 @@ with strategy.scope():
         pass
 
 
-    optimizer_conv = tf.keras.optimizers.Adam(learning_rate)
-    optimizer_fc = tf.keras.optimizers.Adam(learning_rate)
+    optimizer_conv = tf.keras.optimizers.Adam(conv_learning_rate)
+    optimizer_fc = tf.keras.optimizers.Adam(fc_learning_rate)
 
 @tf.function#(experimental_relax_shapes=True)
 def update_agent_fc(state_batch, action_batch, reward_batch, next_state_batch, done,sample_probabilities):
@@ -256,8 +354,9 @@ def update_agent_fc(state_batch, action_batch, reward_batch, next_state_batch, d
         q_values = fc_agent.get_qvalues(state_batch)
         selected_action_qvalues = tf.reduce_sum(tf.multiply(q_values, masks), axis=1)
         td_error = tf.abs(reference_qvalues - selected_action_qvalues)
-        deltai = td_error
-        importance_sampling = 1 / (replay_buffer_size** beta * sample_probabilities**beta)
+        deltai = tf.math.square(td_error)
+        importance_sampling = (1 / fc_replay_buffer_size* sample_probabilities)**beta
+        importance_sampling = importance_sampling / tf.math.reduce_max(importance_sampling)
         td_loss = tf.math.reduce_mean((importance_sampling*deltai))
 
     gradients = tape.gradient(td_loss, fc_agent.model.trainable_weights)
@@ -276,8 +375,9 @@ def update_agent_conv(state_batch, action_batch, reward_batch, next_state_batch,
         q_values = conv_agent.get_qvalues(state_batch)
         selected_action_qvalues = tf.reduce_sum(tf.multiply(q_values, masks), axis=1)
         td_error = tf.abs(reference_qvalues - selected_action_qvalues)
-        deltai = td_error
-        importance_sampling = 1 / (replay_buffer_size** beta * sample_probabilities**beta)
+        deltai = tf.math.square(td_error)
+        importance_sampling = (1 / conv_replay_buffer_size * sample_probabilities)**beta
+        importance_sampling = importance_sampling / tf.math.reduce_max(importance_sampling)
         td_loss = tf.math.reduce_mean((importance_sampling*deltai))
 
 
@@ -463,7 +563,7 @@ def play_and_record(conv_agent, fc_agent,env, conv_replay, fc_replay,run_id, tes
 
 num_datasets = len(dataset_names)
 
-num_tests = (rl_iterations//10) + 1
+num_tests = (rl_iterations//test_frequency_epochs) + 1
 
 weights_history_tests = np.zeros(shape=(num_tests, num_datasets))
 acc_history_tests = np.zeros(shape=(num_tests, num_datasets))
@@ -471,8 +571,8 @@ rw_history_tests = np.zeros(shape=(num_tests, num_datasets))
 test_counter = 1
 
 
-fc_exp_replay = PrioritizedExperienceReplayBufferMultipleDatasets(replay_buffer_size, dataset_names)
-conv_exp_replay = PrioritizedExperienceReplayBufferMultipleDatasets(replay_buffer_size, dataset_names)
+fc_exp_replay = PrioritizedExperienceReplayBufferMultipleDatasets(fc_replay_buffer_size, dataset_names, alpha=replay_alpha)
+conv_exp_replay = PrioritizedExperienceReplayBufferMultipleDatasets(conv_replay_buffer_size, dataset_names, alpha=replay_alpha)
 
 
 for idx, env in enumerate(envs):
@@ -486,10 +586,10 @@ highest_rw = 0
 num_training_samples_per_epoch = rl_batch_size*update_weights_iterations
 
 with tqdm(total=rl_iterations,
-        bar_format="{l_bar}{bar}|{n}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}, Last 3 RW: {postfix[0][0]:.2f}, {postfix[0][1]:.2f} & {postfix[0][2]:.2f} W: {postfix[1][0]:.2f}, {postfix[1][1]:.2f} & {postfix[1][2]:.2f} Acc: {postfix[2][0]:.2f}, {postfix[2][1]:.2f} & {postfix[2][2]:.2f}] Replay: conv:{postfix[3]}/fc:{postfix[4]}. Epsylon={postfix[5]}.",
+        bar_format="{l_bar}{bar}|{n}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}, Last 3 RW: {postfix[0][0]:.2f}, {postfix[0][1]:.2f} & {postfix[0][2]:.2f} W: {postfix[1][0]:.2f}, {postfix[1][1]:.2f} & {postfix[1][2]:.2f} Acc: {postfix[2][0]:.2f}, {postfix[2][1]:.2f} & {postfix[2][2]:.2f}] Replay: conv:{postfix[3]}/fc:{postfix[4]}. Epsylon={postfix[5]}. Beta={postfix[6]}.",
         postfix=[dict({0: 0, 1: 0, 2: np.mean(rw_history_tests[0])}), 
         dict({0: 0, 1: 0, 2: np.mean(weights_history_tests[0])}),
-        dict({0: 0, 1: 0, 2: np.mean(acc_history_tests[0])}), len(conv_exp_replay), len(fc_exp_replay), conv_agent.epsilon]) as t:
+        dict({0: 0, 1: 0, 2: np.mean(acc_history_tests[0])}), len(conv_exp_replay), len(fc_exp_replay), conv_agent.epsilon, beta]) as t:
 
     for i in range(rl_iterations):
 
@@ -524,8 +624,9 @@ with tqdm(total=rl_iterations,
             accum_fc_loss += np.sum(fc_loss_t)
 
 
-        td_loss_history_conv.append(conv_loss_t/num_training_samples_per_epoch)
-        td_loss_history_fc.append(fc_loss_t/num_training_samples_per_epoch)
+        td_loss_history_conv.append(accum_conv_loss/num_training_samples_per_epoch)
+        td_loss_history_fc.append(accum_fc_loss/num_training_samples_per_epoch)
+        beta += beta_step
 
         # highest_td_error = not highest_td_error
 
@@ -534,13 +635,14 @@ with tqdm(total=rl_iterations,
         t.postfix[3] = len(conv_exp_replay)
         t.postfix[4] = len(fc_exp_replay)
         t.postfix[5] = conv_agent.epsilon
+        t.postfix[6] = beta
         
         if i % copy_weights_frequency == 0:
             # conv_target_network.model.set_weights(conv_agent.model.get_weights())
             fc_target_network.model.set_weights(fc_agent.model.get_weights())
 
         # adjust agent parameters
-        if i % test_frequency_epochs == 0:
+        if i % test_frequency_epochs == 0 and i>0:
             accumulated_rw = 0
             for idx, env in enumerate(test_envs):
                 dataset = dataset_names[idx]
