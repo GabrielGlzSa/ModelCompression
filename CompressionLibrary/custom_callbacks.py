@@ -2,6 +2,8 @@ import tensorflow as tf
 import logging
 import numpy as np
 from CompressionLibrary import utils
+import pandas as pd
+import os
 
 class AddSparseConnectionsCallback(tf.keras.callbacks.Callback):
 
@@ -51,7 +53,9 @@ class RestoreBestWeights(tf.keras.callbacks.Callback):
                       'weights_after':None, 
                       'accuracy_before':self.acc_before,
                       'accuracy_after': None}
-
+        
+        self.save_name = './data/stats/fine_tuning_val_acc_stats.csv'
+        
        
 
     def on_train_begin(self, logs=None):
@@ -66,8 +70,22 @@ class RestoreBestWeights(tf.keras.callbacks.Callback):
             
 
     def on_epoch_end(self, epoch, logs=None):
-        current_acc, current_reward = self.get_monitor_values(logs)
+        current_acc, current_reward, weights_after = self.get_monitor_values(logs)
         self.logger.info(f'Epoch {epoch} has a reward of {current_reward}.')
+        info = {
+            'epoch': epoch,
+            'weights_before': self.weights_before,
+            'weights_after': weights_after,
+            'acc_before': self.acc_before,
+            'acc_after': current_acc,
+            'rw': current_reward
+            }
+        
+        new_row = pd.DataFrame(info, index=[0])
+        if not os.path.isfile(self.save_name):
+            new_row.to_csv(self.save_name, index=False)
+        else: # else it exists so append without writing the header
+            new_row.to_csv(self.save_name, mode='a', index=False, header=False)
 
         if self.best_weights is None:
             # Restore the weights after first epoch if no progress is ever made.
@@ -93,8 +111,7 @@ class RestoreBestWeights(tf.keras.callbacks.Callback):
         if self.verbose > 0:
             self.logger.info(
                 f'Restoring weights of epoch {self.best_epoch} due to achieving {self.best_acc} val accuracy and {self.best_reward} reward.')
-        self.model.set_weights(self.best_weights)
-
+        self.model.set_weights(self.best_weights)    
 
     def get_monitor_values(self, logs):
         logs = logs or {}
@@ -107,7 +124,7 @@ class RestoreBestWeights(tf.keras.callbacks.Callback):
         self.stats['accuracy_after'] = acc_after
         reward = self.reward_func(self.stats)        
 
-        return acc_after, reward
+        return acc_after, reward, weights_after
 
     def _is_improvement(self, monitor_value, reference_value):
         return self.monitor_op(monitor_value, reference_value)
