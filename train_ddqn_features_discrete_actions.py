@@ -27,8 +27,9 @@ import matplotlib.pyplot as plt
 from functools import partial
 import gc
 
+current_os = 'windows'
 
-dataset_names = ['mnist']#['fashion_mnist','kmnist','mnist']
+dataset_names = ['kmnist','mnist']#['fashion_mnist','kmnist','mnist']
 agent_name = 'DDQN_discrete_tuning_zero_rw_FM_best_img_' + '-'.join(dataset_names)
 run_id = datetime.now().strftime('%Y-%m-%d-%H-%M%S-') + str(uuid4())
 
@@ -50,8 +51,26 @@ except:
 if strategy:
     print('Number of devices: {}'.format(strategy.num_replicas_in_sync))
 
+
+if current_os == 'windows':
+    data_path = f'G:\\Python projects\\ModelCompressionRL\\data\\'
+    log_path = f'G:\\Python projects\\ModelCompressionRL\\data\\logs\\ModelCompression_{agent_name}.log'
+    exploration_filename = data_path + f'stats/{agent_name}_training.csv'
+    test_filename = data_path + f'stats\\{agent_name}_testing.csv'
+    agents_path = data_path+f'agents\\DDQN\\checkpoints\\LeNet_{agent_name}'
+    figures_path = data_path+f'figures\\{agent_name}'
+    datasets_path = data_path+"datasets"
+else:
+    log_path = f'/home/A00806415/DCC/ModelCompression/data/logs/ModelCompression_{agent_name}.log'
+    exploration_filename = data_path + f'/stats/{agent_name}_training.csv'
+    test_filename = data_path + f'/stats/{agent_name}_testing.csv'
+    agents_path = data_path+f'/agents/DDQN/checkpoints/LeNet_{agent_name}'
+    figures_path = data_path+f'/figures/{agent_name}'
+
+
+
 logging.basicConfig(level=logging.DEBUG, handlers=[
-    logging.FileHandler(f'/home/A00806415/DCC/ModelCompression/data/logs/ModelCompression_{agent_name}.log', 'w+')],
+    logging.FileHandler(log_path, 'w+')],
     format='%(asctime)s -%(levelname)s - %(funcName)s -  %(message)s')
 logging.root.setLevel(logging.DEBUG)
 
@@ -61,12 +80,6 @@ log.setLevel(logging.ERROR)
 logger = logging.getLogger(__name__)
 
 logger.info(f'Agent is {agent_name}.')
-
-exploration_filename = data_path + f'/stats/{agent_name}_training.csv'
-test_filename = data_path + f'/stats/{agent_name}_testing.csv'
-agents_path = data_path+f'/agents/DDQN/checkpoints/LeNet_{agent_name}'
-figures_path = data_path+f'/figures/{agent_name}'
-
 
 # Parameters shared in training and testing env
 current_state = 'layer_input'
@@ -81,7 +94,6 @@ tuning_batch_size = batch_size_per_replica * strategy.num_replicas_in_sync
 # Env variables
 training_state_set_source = 'train'
 training_num_feature_maps = -1
-reward_step = True
 
 
 # Testing variables
@@ -132,7 +144,11 @@ epsylon_decay = 0.9994
 layer_name_list = ['conv2d_1',  'dense', 'dense_1']
 
 def create_model(dataset_name, train_ds, valid_ds):
-    checkpoint_path = f"./data/models/lenet_{dataset_name}/cp.ckpt"
+    if current_os =='windows':
+        checkpoint_path = f"G:\\Python projects\\ModelCompressionRL\\data\\models\\lenet_{dataset_name}\\cp.ckpt"
+    else:
+        checkpoint_path = f"./data/models/lenet_{dataset_name}/cp.ckpt"
+
     optimizer = tf.keras.optimizers.Adam(1e-5)
     loss_object = tf.keras.losses.SparseCategoricalCrossentropy()
     train_metric = tf.keras.metrics.SparseCategoricalAccuracy()
@@ -195,7 +211,7 @@ def dataset_preprocessing_img2label(img, label):
 
 def load_dataset(dataset_name, dataset_preprocessing, batch_size=128):
     splits, info = tfds.load(dataset_name, as_supervised=True, with_info=True, shuffle_files=True,
-                                split=['train[:80%]', 'train[80%:]','test'])
+                                split=['train[:80%]', 'train[80%:]','test'], data_dir=datasets_path)
 
     (train_examples, validation_examples, test_examples) = splits
     num_examples = info.splits['train'].num_examples
@@ -686,7 +702,7 @@ with tqdm(total=rl_iterations,
             
             
 
-            if accumulated_rw > highest_rw:
+            if accumulated_rw >= highest_rw:
                 logger.info(f'Saving DQN weights as {accumulated_rw} > {highest_rw}. Mean acc: {np.mean(acc_history_tests[test_counter])}. Mean w: {np.mean(weights_history_tests[test_counter])}')
                 highest_rw = accumulated_rw
                 fc_agent.model.save_weights(agents_path+'_fc.cpkt')
