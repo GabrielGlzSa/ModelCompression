@@ -29,8 +29,8 @@ import gc
 
 current_os = 'windows'
 
-dataset_names = ['kmnist','mnist']#['fashion_mnist','kmnist','mnist']
-agent_name = 'DDQN_discrete_tuning_zero_rw_FM_best_img_' + '-'.join(dataset_names)
+dataset_names = ['fashion_mnist']#['fashion_mnist','kmnist','mnist']
+agent_name = 'DDQN_discrete_tuning_100_rw_FM_best_img_' + '-'.join(dataset_names)
 run_id = datetime.now().strftime('%Y-%m-%d-%H-%M%S-') + str(uuid4())
 
 try:
@@ -84,7 +84,7 @@ logger.info(f'Agent is {agent_name}.')
 # Parameters shared in training and testing env
 current_state = 'layer_input'
 next_state = 'layer_output'
-tuning_epochs = 0
+tuning_epochs = 100
 tuning_mode = 'final'
 
 batch_size_per_replica = 128
@@ -100,22 +100,22 @@ training_num_feature_maps = -1
 testing_state_set_source = 'validation'
 testing_num_feature_maps = -1
 eval_n_samples = 1
-test_frequency_epochs = 100 # Test every 20 epochs.
+test_frequency_epochs = 50 # Test every 20 epochs.
 
 #Autoencoder
 latent_dim = 64
 
 # Replay variables
-fc_replay_buffer_size = 40000
-conv_replay_buffer_size = 50000
+fc_replay_buffer_size = 10000
+conv_replay_buffer_size = 20000
 replay_alpha = 1.0
 
 # RL training variables
 
 verbose = 0
-rl_iterations = 10000
+rl_iterations = 2000
 update_weights_iterations = 10
-rl_batch_size = 32
+rl_batch_size = 128
 gamma = 0.99
 beta = 0.5
 max_beta = 1.0
@@ -129,16 +129,20 @@ fc_learning_rate = 1e-5
 # decay_steps = 1000
 epsilon_start_value = 1.0
 min_epsylon = 0.1
-copy_weights_frequency = 100
+copy_weights_frequency = 50
 
+# For 2000 training epochs.
+epsylon_decay = 0.9987
 # For 4000 training epochs.
 # epsylon_decay = 0.9997 #for 4000
 # For 2000 training epochs.
 # epsylon_decay = 0.999
 # For 1000 training epochs.
 # epsylon_decay = 0.997
+# For 5000 epochs
+# epsylon_decay = 0.9994
 # For 10,000 training epochs.
-epsylon_decay = 0.9994
+# epsylon_decay = 0.9997
 
 
 layer_name_list = ['conv2d_1',  'dense', 'dense_1']
@@ -352,10 +356,10 @@ with strategy.scope():
     #     name="target_conv", state_shape=conv_shape, n_actions=conv_n_actions, epsilon=epsilon_start_value,layer_type='cnn')
     conv_agent.model.summary()
     try:
-        fc_agent.model.load_weights(agents_path+'_fc.cpkt')
-        fc_target_network.model.load_weights(agents_path+'_fc_target.cpkt')
+        fc_agent.model.load_weights(agents_path+'_fc.ckpt')
+        fc_target_network.model.load_weights(agents_path+'_fc_target.ckpt')
 
-        conv_agent.model.load_weights(agents_path+'_conv.cpkt')
+        conv_agent.model.load_weights(agents_path+'_conv.ckpt')
         # conv_target_network.model.load_weights(agents_path+'_conv_target.ckpt')
     except:
         print('Failed to find pretrained models for the RL agents.')
@@ -705,10 +709,10 @@ with tqdm(total=rl_iterations,
             if accumulated_rw >= highest_rw:
                 logger.info(f'Saving DQN weights as {accumulated_rw} > {highest_rw}. Mean acc: {np.mean(acc_history_tests[test_counter])}. Mean w: {np.mean(weights_history_tests[test_counter])}')
                 highest_rw = accumulated_rw
-                fc_agent.model.save_weights(agents_path+'_fc.cpkt')
-                fc_target_network.model.save_weights(agents_path+'_fc_target.cpkt')
+                fc_agent.model.save_weights(agents_path+'_fc.ckpt')
+                fc_target_network.model.save_weights(agents_path+'_fc_target.ckpt')
 
-                conv_agent.model.save_weights(agents_path+'_conv.cpkt')
+                conv_agent.model.save_weights(agents_path+'_conv.ckpt')
                 # conv_target_network.model.save_weights(agents_path+'_conv_target.ckpt')
 
 
