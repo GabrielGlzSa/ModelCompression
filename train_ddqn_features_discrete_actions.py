@@ -28,8 +28,8 @@ from functools import partial
 import gc
 
 
-dataset_names = ['fashion_mnist']#['fashion_mnist','kmnist','mnist']
-agent_name = 'DDQN_discrete_tuning_100_rw_FM_best_img_' + '-'.join(dataset_names)
+dataset_names = ['fashion_mnist','kmnist','mnist']
+agent_name = 'DDQN_discrete_notuning_rw_FM_best_img' + '-'.join(dataset_names)
 run_id = datetime.now().strftime('%Y-%m-%d-%H-%M%S-') + str(uuid4())
 
 try:
@@ -71,7 +71,7 @@ figures_path = data_path+f'/figures/{agent_name}'
 # Parameters shared in training and testing env
 current_state = 'layer_input'
 next_state = 'layer_output'
-tuning_epochs = 100
+tuning_epochs = 0
 tuning_mode = 'final'
 
 batch_size_per_replica = 128
