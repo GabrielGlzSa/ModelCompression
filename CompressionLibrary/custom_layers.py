@@ -192,7 +192,7 @@ class MLPConv(tf.keras.layers.Layer):
           rates=[
          1, 1, 1, 1],
           padding=self.padding)
-        output = self.activation(tf.matmul(patches, self.w_0))
+        output = tf.matmul(patches, self.w_0)
         output = tf.matmul(output, self.w_1)
         output = tf.nn.bias_add(output, self.bias)
         return self.activation(output)
