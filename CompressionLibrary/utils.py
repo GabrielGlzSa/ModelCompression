@@ -153,7 +153,7 @@ def calculate_model_weights(model):
       num_zeroes_sparse = tf.math.count_nonzero(S == 0.0).numpy()
       weights_after = tf.size(P) + tf.size(Q) + (tf.size(S) - num_zeroes_sparse) + tf.size(bias)
     else:
-      weights_after = np.sum([K.count_params(w) for w in layer.trainable_weights])
+      weights_after = int(np.sum([K.count_params(w) for w in layer.trainable_weights]))
 
     logger.debug(f'Layer {layer.name} has {weights_after} weights.')
     total_weights += weights_after
@@ -161,7 +161,7 @@ def calculate_model_weights(model):
     layer.trainable = trainable_previous_config
 
   logger.debug(f'Model has {total_weights} weights.')
-  return int(total_weights)
+  return total_weights
 
 def extract_model_parts(model):
   layers = []

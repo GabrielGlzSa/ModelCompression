@@ -245,8 +245,12 @@ class InsertDenseSVD(ModelCompression):
         weights, bias = old_layer.get_weights()
         input_size , units = weights.shape
         if self.percentage is None:
-            hidden_units = units//12
-            self.percentage = hidden_units / units
+            if self.hidden_units is None:
+                hidden_units = units//12
+                self.percentage = 100 * hidden_units / units
+            else:
+                hidden_units = self.hidden_units
+                self.percentage = 100 * hidden_units / units
         else:
             max_units = (input_size * units)//(input_size+units)
             if isinstance(self.percentage, int):
@@ -260,11 +264,11 @@ class InsertDenseSVD(ModelCompression):
         
         self.logger.debug(f'SVD is being calculated for shape {weights.shape} using {hidden_units} singular values ({self.percentage}%).')
         try:
-            s, u, v = tf.linalg.svd(weights, full_matrices=True)
+            s, u, v = tf.linalg.svd(weights, full_matrices=False)
         except Exception as e:
             print(e)
             with tf.device('/CPU:0'):
-                s, u, v = tf.linalg.svd(weights, full_matrices=True)
+                s, u, v = tf.linalg.svd(weights, full_matrices=False)
                 
         u = tf.slice(u, begin=[0, 0], size=[weights.shape[0], hidden_units])
         s = tf.slice(s, begin=[0], size=[hidden_units])
@@ -461,8 +465,12 @@ class MLPCompression(ModelCompression):
 
         weights = tf.reshape(kernel, shape=[-1, filters])
         if self.percentage is None:
-            hidden_units = filters//6
-            self.percentage = hidden_units / filters
+            if self.hidden_units is None:
+                hidden_units = filters//6
+                self.percentage = 100 * hidden_units / filters
+            else:
+                hidden_units = self.hidden_units
+                self.percentage = 100 *  hidden_units / filters
         else:
             input_size, _ = weights.shape
             max_filters = (input_size * filters)//(input_size+filters)
@@ -475,11 +483,11 @@ class MLPCompression(ModelCompression):
         self.logger.debug(f'MLP SVD is being calculated for shape {weights.shape} using {hidden_units} singular values ({self.percentage}% of units).')
 
         try:
-            s, u, v = tf.linalg.svd(weights, full_matrices=True)
+            s, u, v = tf.linalg.svd(weights, full_matrices=False)
         except Exception as e:
             print(e)
             with tf.device('/CPU:0'):
-                s, u, v = tf.linalg.svd(weights, full_matrices=True)
+                s, u, v = tf.linalg.svd(weights, full_matrices=False)
 
         u = tf.slice(u, begin=[0, 0], size=[weights.shape[0], hidden_units])
         s = tf.slice(s, begin=[0], size=[hidden_units])
