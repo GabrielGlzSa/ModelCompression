@@ -142,7 +142,8 @@ class FireLayer(tf.keras.layers.Layer):
         o1x1 = tf.nn.conv2d(input=x, filters=self.kernel_expand1x1, strides=self.strides, padding='VALID')
         o3x3 = tf.nn.conv2d(input=x, filters=self.kernel_expand3x3, strides=self.strides, padding=self.padding)
         if o1x1.shape != o3x3.shape:
-            o1x1 = tf.keras.layers.Cropping2D(cropping=2)(o1x1)
+            cropping = o1x1.shape[1]-o3x3.shape[1]
+            o1x1 = tf.keras.layers.Cropping2D(cropping=int(cropping/2))(o1x1)
         x = tf.keras.layers.concatenate([o1x1, o3x3], axis=3)
         x = tf.nn.bias_add(x, self.bias)
         return self.activation(x)
@@ -283,12 +284,12 @@ class SparseConvolution2D(tf.keras.layers.Layer):
         zeroes = tf.zeros_initializer()
         self.P = tf.Variable(
             name='P', initial_value=identity_initializer(shape=(channels, channels), dtype='float32'),
-            constraint=tf.keras.constraints.MaxNorm(max_value=channels, axis=-1),
+            constraint=tf.keras.constraints.MaxNorm(max_value=1.0, axis=-1),
             trainable=True)
 
         self.Q = tf.Variable(
             name='Q', initial_value=zeroes(shape=(channels, sh, sw, self.bases),dtype='float32'),
-            constraint=tf.keras.constraints.MaxNorm(max_value=self.bases, axis=-1),
+            constraint=tf.keras.constraints.MaxNorm(max_value=1.0, axis=-1),
             trainable=True)
         
 
@@ -296,7 +297,7 @@ class SparseConvolution2D(tf.keras.layers.Layer):
           dtype='float32',
           trainable=True,
           constraint=SparseWeights(),
-          regularizer=L1L2SRegularizer(l1=0.1, l2=0.1))
+          regularizer=L1L2SRegularizer(l1=0.001, l2=0.001))
 
         self.bias = tf.Variable(
             name='bias', initial_value=zeroes(shape=(self.filters),dtype='float32'),
@@ -309,7 +310,7 @@ class SparseConvolution2D(tf.keras.layers.Layer):
 
     def call(self, inputs):
         J = tf.matmul(inputs, self.P)
-
+        
         # Move channels to the first dimension so that it be split first in the map.
         J = tf.transpose(J, perm=[3,0,1,2])
         # Add a new dimension so that channel is 1.
