@@ -130,14 +130,15 @@ def calculate_model_weights(model):
     layer.trainable = True
     
     if 'DeepComp' in layer.name:
-      weights, _ = layer.get_weights()
-      num_zeroes = tf.math.count_nonzero(tf.abs(weights) == 0.0).numpy()
+      weights, bias = layer.get_weights()
+      non_zeroes_sparse = tf.math.count_nonzero(weights).numpy()
       weights_before = np.sum([K.count_params(w) for w in layer.trainable_weights])
-      weights_after = weights_before - num_zeroes
+      weights_after = non_zeroes_sparse + tf.size(bias).numpy()
     elif isinstance(layer, SparseSVD):
       basis, sparse_dict, bias = layer.get_weights()
-      non_zeroes_sparse = tf.math.count_nonzero(sparse_dict != 0.0).numpy()
-      weights_after = tf.size(basis) + non_zeroes_sparse + tf.size(bias)
+      non_zeroes_sparse = tf.math.count_nonzero(sparse_dict).numpy()
+      weights_after = tf.size(basis) + 2 * non_zeroes_sparse + tf.size(bias)
+      weights_after = weights_after.numpy()
     elif isinstance(layer, SparseConnectionsConv2D):
       kernel_size = layer.get_config()['kernel_size']
       connections = layer.get_connections()
@@ -148,10 +149,12 @@ def calculate_model_weights(model):
           channel_weights = tf.reduce_prod(kernel_size)
       weights_before = np.sum([K.count_params(w) for w in layer.trainable_weights])
       weights_after = weights_before - (channel_weights * num_zeroes)
+      weights_after = weights_after.numpy()
     elif isinstance(layer, SparseConvolution2D):
       P, Q, S, bias = layer.get_weights()
-      num_zeroes_sparse = tf.math.count_nonzero(S == 0.0).numpy()
-      weights_after = tf.size(P) + tf.size(Q) + (tf.size(S) - num_zeroes_sparse) + tf.size(bias)
+      num_non_zeros = tf.math.count_nonzero(S).numpy()
+      weights_after = tf.size(P) + tf.size(Q) + (2 * num_non_zeros) + tf.size(bias)
+      weights_after = weights_after.numpy()
     else:
       weights_after = int(np.sum([K.count_params(w) for w in layer.trainable_weights]))
 
@@ -177,8 +180,14 @@ def extract_model_parts(model):
 
 def create_model_from_parts(layers, configs, weights,optimizer, loss, metric, input_shape=(224,224,3)):
   first_conv_idx = 0
-  if not isinstance(layers[0], tf.keras.layers.Conv2D):
-    first_conv_idx = 1
+  
+  # if not isinstance(layers[0], tf.keras.layers.Conv2D):
+  #   first_conv_idx = 1
+
+  for idx, layer in enumerate(layers):
+     if isinstance(layer, tf.keras.layers.Conv2D):
+        first_conv_idx = idx
+        break
 
   input = tf.keras.layers.Input(input_shape)
   layer = layers[first_conv_idx](**configs[first_conv_idx])
