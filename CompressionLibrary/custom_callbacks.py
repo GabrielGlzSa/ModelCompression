@@ -36,7 +36,7 @@ class AddSparseConnectionsCallback(tf.keras.callbacks.Callback):
 
 class RestoreBestWeights(tf.keras.callbacks.Callback):
 
-    def __init__(self, acc_before, weights_before, reward_func, verbose=0):
+    def __init__(self, acc_before, weights_before, reward_func, dataset_name, save_name, verbose=0, stop_when_better=False):
         """
         
         """
@@ -45,7 +45,9 @@ class RestoreBestWeights(tf.keras.callbacks.Callback):
         self.weights_before = weights_before
         self.reward_func = reward_func
         self.acc_before = acc_before
+        self.dataset_name = dataset_name
         self.best_weights = None
+        self.stop_when_better = stop_when_better
         self.logger = logging.getLogger(__name__)
         
         self.monitor_op = np.greater
@@ -54,7 +56,7 @@ class RestoreBestWeights(tf.keras.callbacks.Callback):
                       'accuracy_before':self.acc_before,
                       'accuracy_after': None}
         
-        self.save_name = './data/stats/fine_tuning_val_acc_stats.csv'
+        self.save_name = save_name
         
        
 
@@ -73,6 +75,7 @@ class RestoreBestWeights(tf.keras.callbacks.Callback):
         current_acc, current_reward, weights_after = self.get_monitor_values(logs)
         self.logger.info(f'Epoch {epoch} has a reward of {current_reward}.')
         info = {
+            'dataset': self.dataset_name,
             'epoch': epoch,
             'weights_before': self.weights_before,
             'weights_after': weights_after,
@@ -104,7 +107,7 @@ class RestoreBestWeights(tf.keras.callbacks.Callback):
                     self.best_epoch = epoch
                     self.best_weights = self.model.get_weights()
 
-        if current_acc > self.acc_before:
+        if self.stop_when_better and current_acc > self.acc_before:
             self.model.stop_training = True
             
     def on_train_end(self, logs=None):
