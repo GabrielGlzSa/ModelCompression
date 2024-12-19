@@ -29,13 +29,13 @@ import random
 from deap import tools
 
 
-current_os = 'windows'
+current_os = 'linux'
 
 
-dataset_name = 'kmnist'
+dataset_name = 'mnist'
 batch_size = 64
 
-agent_name = 'test_genetic_algorithm' + '_' + dataset_name
+agent_name = 'GA_test_func_' + dataset_name
 
 print(tf.config.list_physical_devices('GPU'))
 print(tf.config.list_physical_devices('GPU'))
@@ -53,7 +53,7 @@ else:
     exploration_filename = data_path + f'/stats/{agent_name}_training.csv'
     test_filename = data_path + f'/stats/{agent_name}_testing.csv'
     figures_path = data_path+f'/figures/{agent_name}'
-
+    datasets_path = data_path+"/datasets/"
 
 print(tf.config.list_physical_devices('GPU'))
 logging.basicConfig(level=logging.DEBUG, handlers=[
@@ -178,6 +178,7 @@ def evaluation_function(ind):
     ind = fix_solution(ind)
     callbacks = []
     model = create_model(dataset_name=dataset_name, train_ds=train_ds, valid_ds=valid_ds)
+    logger.info(f'Evaluating solution {ind}')
     for action_idx, layer_name in enumerate(layer_name_list):
         layer = model.get_layer(layer_name)
         action = ind[action_idx]
@@ -207,6 +208,9 @@ def evaluation_function(ind):
 
     
     test_loss, test_acc_after = model.evaluate(test_ds, verbose=verbose)
+    print(test_acc_after)
+    test_loss, test_acc_after = model.evaluate(test_ds, verbose=verbose)
+    print(test_acc_after)
     val_loss, val_acc_after = model.evaluate(valid_ds, verbose=verbose)
     weights_after = calculate_model_weights(model)
     stats = {
@@ -258,23 +262,29 @@ stats.register("max", np.max, axis=0)
 pareto = tools.ParetoFront()
 pop = toolbox.population(n=50)
 
-start = datetime.now()
-pop, logbook = algorithms.eaMuPlusLambda(population=pop,
-                toolbox=toolbox,
-                mu=50,
-                lambda_=25,
-                cxpb=0.5,
-                mutpb=0.5,
-                halloffame=pareto,
-                stats=stats,
-                ngen=200,
-                verbose=True)
+# start = datetime.now()
+# pop, logbook = algorithms.eaMuPlusLambda(population=pop,
+#                 toolbox=toolbox,
+#                 mu=50,
+#                 lambda_=50,
+#                 cxpb=0.5,
+#                 mutpb=0.5,
+#                 halloffame=pareto,
+#                 stats=stats,
+#                 ngen=200,
+#                 verbose=True)
 
 
-end  = datetime.now()
+# end  = datetime.now()
 
-logger.info(f'Took {(end - start).total_seconds()} seconds.')
-for ind in pareto:
-    acc, weights = ind.fitness.values
-    print(ind, acc, weights, 100*weights/weights_before)
-    logger.info(f"Solution {ind} has an accuracy of {acc:4f} and {int(weights)} weights ({100* weights/weights_before:3f}%).")
+# logger.info(f'Took {(end - start).total_seconds()} seconds.')
+# for ind in pareto:
+#     acc, weights = ind.fitness.values
+#     print(ind, acc, weights, 100*weights/weights_before)
+#     logger.info(f"Solution {ind} has an accuracy of {acc:4f} and {int(weights)} weights ({100* weights/weights_before:3f}%).")
+
+
+sol = [15, 87, 28]
+for i in range(10):
+    print(f'Iteration {i}')
+    evaluation_function(ind=sol)
