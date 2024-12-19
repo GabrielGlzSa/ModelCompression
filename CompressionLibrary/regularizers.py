@@ -3,7 +3,7 @@ import tensorflow as tf
 
 class L1L2SRegularizer(tf.keras.regularizers.Regularizer):
 
-    def __init__(self, l1=0.0, l2=0.0):
+    def __init__(self, l1=0.01, l2=0.01):
         self.l1 = l1
         self.l2 = l2
 
