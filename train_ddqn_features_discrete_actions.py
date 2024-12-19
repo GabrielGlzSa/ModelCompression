@@ -27,10 +27,10 @@ import matplotlib.pyplot as plt
 from functools import partial
 import gc
 
-current_os = 'windows'
+current_os = 'linux'
 
-dataset_names = ['fashion_mnist','kmnist','mnist']
-agent_name = 'DDQN_discrete_notuning_rw_FM_best_img' + '-'.join(dataset_names)
+dataset_names = ['fashion_mnist','kmnist']
+agent_name = 'DDQN_discrete_tuning_100_rw_FM_best_img_2nd_try' + '-'.join(dataset_names)
 run_id = datetime.now().strftime('%Y-%m-%d-%H-%M%S-') + str(uuid4())
 
 try:
@@ -46,7 +46,7 @@ try:
 except:
   print('ERROR: Not connected to a TPU runtime; Using GPU strategy instead!')
   strategy = tf.distribute.OneDeviceStrategy(device="/gpu:0")
-  data_path = './data'
+  
   
 if strategy:
     print('Number of devices: {}'.format(strategy.num_replicas_in_sync))
@@ -61,11 +61,13 @@ if current_os == 'windows':
     figures_path = data_path+f'figures\\{agent_name}'
     datasets_path = data_path+"datasets"
 else:
+    data_path = './data'
     log_path = f'/home/A00806415/DCC/ModelCompression/data/logs/ModelCompression_{agent_name}.log'
     exploration_filename = data_path + f'/stats/{agent_name}_training.csv'
     test_filename = data_path + f'/stats/{agent_name}_testing.csv'
     agents_path = data_path+f'/agents/DDQN/checkpoints/LeNet_{agent_name}'
     figures_path = data_path+f'/figures/{agent_name}'
+    datasets_path = data_path+'/datasets/'
 
 
 
@@ -84,7 +86,7 @@ logger.info(f'Agent is {agent_name}.')
 # Parameters shared in training and testing env
 current_state = 'layer_input'
 next_state = 'layer_output'
-tuning_epochs = 0
+tuning_epochs = 100
 tuning_mode = 'final'
 
 batch_size_per_replica = 128
