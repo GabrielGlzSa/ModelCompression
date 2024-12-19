@@ -377,8 +377,11 @@ class EnvDiscreteUniqueActions(ModelCompressionEnv):
 
         if self.tuning_mode == 'layer':
             train_layers = new_layers_it
-        else:
+        elif self.tuning_mode == 'compressed':
             train_layers = self.layer_name_list
+        else:
+            train_layers = [layer.name for layer in self.model.layers]
+            
 
 
         if (self.tuning_mode == 'layer' or self._episode_ended) and train_layers:
@@ -621,7 +624,7 @@ class ModelCompressionSVDEnvContinous(ModelCompressionEnv):
 class ModelCompressionSVDIntEnv(ModelCompressionEnv):
     def __init__(self,*args, **kwargs):
         (super(ModelCompressionSVDIntEnv, self).__init__)(*args,**kwargs)
-        self.possible_actions = [5] + list(range(10,100,10)) + [100]
+        self.possible_actions = list(range(5,105,5))
 
     def action_space(self):
         return self.possible_actions
@@ -683,8 +686,10 @@ class ModelCompressionSVDIntEnv(ModelCompressionEnv):
 
         if self.tuning_mode == 'layer':
             train_layers = new_layers_it
-        else:
+        elif self.tuning_mode == 'compressed':
             train_layers = self.layer_name_list
+        else:
+            train_layers = [layer.name for layer in self.model.layers]
             
 
 
